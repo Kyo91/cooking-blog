@@ -1,0 +1,11 @@
+.git
+.github
+.bloop
+.bsp
+.idea
+.metals
+.sbt-cache
+target
+project/target
+data
+*.log
