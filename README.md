@@ -42,6 +42,10 @@ Run checks:
 sbt scalafmtCheckAll test
 ```
 
+The checked-in Phase 3 API contract is in
+[`docs/openapi.yaml`](docs/openapi.yaml). API mutations require the CSRF secret
+from the `cooking_blog_csrf` cookie in the `X-CSRF-Token` header.
+
 ## Scala style
 
 Use classical braces instead of Scala 3 significant-whitespace syntax. A

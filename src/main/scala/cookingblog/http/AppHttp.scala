@@ -4,6 +4,8 @@ import cats.effect.IO
 import cats.syntax.all.*
 import cookingblog.auth.*
 import cookingblog.config.AuthConfig
+import cookingblog.http.api.ApiRoutes
+import cookingblog.service.RecipeApiService
 import doobie.Transactor
 import doobie.implicits.*
 import org.http4s.*
@@ -42,6 +44,8 @@ final class AppHttp(
 )(using logger: Logger[IO]) {
   private val sessionCookieName = "cooking_blog_session"
   private val csrfCookieName = "cooking_blog_csrf"
+  private val apiRoutes =
+    ApiRoutes(RecipeApiService(transactor), sessionManager)
 
   lazy val app: HttpApp[IO] =
     RequestId.httpApp(
@@ -107,7 +111,7 @@ final class AppHttp(
     }
 
   private def protectedRoutes(session: AuthenticatedSession): HttpRoutes[IO] =
-    HttpRoutes.of[IO] {
+    apiRoutes.routes(session) <+> HttpRoutes.of[IO] {
       case GET -> Root =>
         Ok(homePage(session), `Content-Type`(MediaType.text.html))
 
@@ -221,7 +225,7 @@ final class AppHttp(
         h1("Cooking Blog"),
         p(s"Signed in as ${session.record.principal.name}."),
         p(s"Session expires at $expiresAt."),
-        p("Phase 1 foundation is running."),
+        p("The authenticated recipe API is running."),
         form(
           method := "post",
           action := "/logout",

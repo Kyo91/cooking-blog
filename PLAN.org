@@ -545,7 +545,7 @@ PostgreSQL integration tests cover migrations, CRUD for every DAO, deletion,
 case-insensitive title uniqueness, reference and photo constraints, foreign-key
 rollback, and meal timestamp invariants.
 
-** Phase 3: Recipe, meal, and reference APIs
+** DONE Phase 3: Recipe, meal, and reference APIs
 
 - Implement validation, typed errors, cursor pagination, and JSON error mapping.
 - Implement recipe and reference CRUD.
@@ -553,6 +553,17 @@ rollback, and meal timestamp invariants.
 - Publish an OpenAPI description or checked-in endpoint contract.
 
 Exit criterion: API tests cover the standard CRUD lifecycle and error cases.
+
+Implemented with authenticated JSON routes under =/api/v1=, CSRF protection
+for every mutation, boundary validation, typed service errors, stable JSON error
+responses, and opaque cursor pagination with query/sort binding. Recipe,
+reference, and meal writes use service-owned transactions; URL references
+enqueue pending scrape jobs atomically, relevant writes rebuild search
+documents, and meal creation, editing, and deletion recompute =last_made_at=.
+The checked-in OpenAPI 3.1 contract documents the endpoints and schemas.
+PostgreSQL-backed API tests cover authentication, CSRF, validation, conflicts,
+pagination, nested-resource relationships, reference/job behavior, CRUD
+lifecycles, and =last_made_at= maintenance.
 
 ** Phase 4: Photos
 

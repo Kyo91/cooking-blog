@@ -63,6 +63,7 @@ trait RecipeSearchDocumentRepository[F[_]] {
   def find(recipeId: RecipeId): F[Option[RecipeSearchDocument]]
   def update(document: RecipeSearchDocument): F[Boolean]
   def delete(recipeId: RecipeId): F[Boolean]
+  def rebuildSearchDocument(recipeId: RecipeId, updatedAt: Instant): F[Unit]
 }
 
 object DoobieRepositories {
@@ -614,6 +615,69 @@ private object DoobieRecipeSearchDocumentRepository
           updated_at = ${document.updatedAt}
       where recipe_id = ${RecipeId.value(document.recipeId)}
     """.update.run.map(_ > 0)
+
+  override def rebuildSearchDocument(
+      recipeId: RecipeId,
+      updatedAt: Instant
+  ): ConnectionIO[Unit] =
+    sql"""
+      insert into recipe_search_documents (
+        recipe_id, plain_text, search_vector, updated_at
+      )
+      select
+        recipe.id,
+        concat_ws(
+          E'\n',
+          recipe.title,
+          nullif(recipe.description, ''),
+          reference_values.reference_text,
+          meals.meal_text,
+          scraped.scraped_text
+        ),
+        to_tsvector(
+          'english',
+          concat_ws(
+            E'\n',
+            recipe.title,
+            nullif(recipe.description, ''),
+            reference_values.reference_text,
+            meals.meal_text,
+            scraped.scraped_text
+          )
+        ),
+        $updatedAt
+      from recipes recipe
+      left join lateral (
+        select string_agg(
+          concat_ws(' ', reference.display_name, reference.url, reference.citation),
+          E'\n'
+          order by reference.created_at, reference.id
+        ) as reference_text
+        from recipe_references reference
+        where reference.recipe_id = recipe.id
+      ) reference_values on true
+      left join lateral (
+        select string_agg(meal.notes, E'\n' order by meal.cooked_at, meal.id)
+          as meal_text
+        from meals meal
+        where meal.recipe_id = recipe.id
+      ) meals on true
+      left join lateral (
+        select string_agg(
+          concat_ws(' ', document.title, document.content_text),
+          E'\n'
+          order by document.scraped_at, document.id
+        ) as scraped_text
+        from recipe_references reference
+        join scraped_documents document on document.reference_id = reference.id
+        where reference.recipe_id = recipe.id
+      ) scraped on true
+      where recipe.id = ${RecipeId.value(recipeId)}
+      on conflict (recipe_id) do update
+      set plain_text = excluded.plain_text,
+          search_vector = excluded.search_vector,
+          updated_at = excluded.updated_at
+    """.update.run.void
 
   override def delete(recipeId: RecipeId): ConnectionIO[Boolean] =
     sql"""
