@@ -521,7 +521,7 @@ sessions, CSRF-protected logout, protected health routes, configuration,
 structured logging, and graceful resource shutdown are in place. Classical
 brace syntax is enforced with the Scala compiler's =-no-indent= option.
 
-** Phase 2: Persistence and domain core
+** DONE Phase 2: Persistence and domain core
 
 - Add Flyway migrations for recipes, meals, photos, references, scraped
   documents, jobs, and search documents; the authentication-session migration
@@ -533,6 +533,17 @@ brace syntax is enforced with the Scala compiler's =-no-indent= option.
 
 Exit criterion: all records can be created, read, updated, and deleted with
 constraints and transactional invariants verified.
+
+Implemented with an incremental migration for all seven application tables and
+their foreign keys, checks, uniqueness rules, full-text/trigram indexes, and
+cascades. Opaque UUID-backed identifiers, database-backed enums, domain
+records, table-oriented DAO algebras, and doobie =ConnectionIO= interpreters
+are in place. The persistence service owns transaction boundaries for recipe
+and search-document creation, meal/=last_made_at= maintenance,
+reference/scrape-job creation, and scraped-document/search updates.
+PostgreSQL integration tests cover migrations, CRUD for every DAO, deletion,
+case-insensitive title uniqueness, reference and photo constraints, foreign-key
+rollback, and meal timestamp invariants.
 
 ** Phase 3: Recipe, meal, and reference APIs
 
