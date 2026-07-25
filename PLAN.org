@@ -565,7 +565,7 @@ PostgreSQL-backed API tests cover authentication, CSRF, validation, conflicts,
 pagination, nested-resource relationships, reference/job behavior, CRUD
 lifecycles, and =last_made_at= maintenance.
 
-** Phase 4: Photos
+** DONE Phase 4: Photos
 
 - Implement =PhotoStore= and local-filesystem interpreter.
 - Add 10 MB streaming multipart validation and safe JPEG/PNG/WebP processing.
@@ -575,6 +575,24 @@ lifecycles, and =last_made_at= maintenance.
 
 Exit criterion: photos can be uploaded from a phone-sized client, displayed,
 captioned, selected as primary, and safely deleted.
+
+Implemented with an =F[_]=-style photo-storage boundary and a local-filesystem
+interpreter using opaque storage keys and atomic variant writes. Multipart
+uploads stream through temporary storage with a strict 10,000,000-byte
+per-photo limit; JPEG, PNG, and WebP are accepted only after decoding. Images
+are orientation-corrected, metadata-stripped, and re-encoded into original,
+display, and thumbnail variants. WebP input is normalized to PNG so processing
+remains pure Java and portable across the laptop's ARM architecture.
+
+Authenticated APIs support multi-photo upload, caption editing, permanent
+deletion, and recipe primary-photo selection. Media routes serve immutable
+variants and automatically fall back to the newest photo from the most recent
+meal. Recipe and meal deletion clean up corresponding objects, failed metadata
+writes are compensated, and a periodic aged-orphan reconciliation handles
+interrupted cleanup without racing active uploads. Readiness checks the photo
+directory, configuration and no-backup behavior are documented, and
+PostgreSQL-backed HTTP tests cover upload, display, caption, primary/fallback
+selection, invalid and oversized content, and physical cleanup.
 
 ** Phase 5: Durable scraping
 

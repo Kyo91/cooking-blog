@@ -5,6 +5,7 @@ import ciris.Secret
 import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
+import cookingblog.storage.LocalPhotoStore
 import doobie.implicits.*
 import munit.CatsEffectSuite
 import org.http4s.*
@@ -14,6 +15,8 @@ import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
 
 import java.security.SecureRandom
+import java.nio.file.Files
+import scala.jdk.CollectionConverters.*
 import scala.concurrent.duration.*
 
 final class AppHttpIntegrationSuite extends CatsEffectSuite {
@@ -41,6 +44,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         anonymousApi <- app.run(
           Request[IO](GET, uri"/api/v1/recipes")
             .putHeaders(headers.Accept(MediaType.application.json))
+        )
+        anonymousMedia <- app.run(
+          Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000")
         )
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
@@ -80,6 +86,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(loginPage.status, Status.Ok)
         assertEquals(anonymousHome.status, Status.SeeOther)
         assertEquals(anonymousApi.status, Status.Unauthorized)
+        assertEquals(anonymousMedia.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)
         assertEquals(anonymousLogout.status, Status.SeeOther)
@@ -101,7 +108,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
-      http = AppHttp(credentials, manager, transactor, authConfig)
+      photoDirectory <- temporaryDirectory
+      photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
+      http = AppHttp(credentials, manager, transactor, authConfig, photoStore)
       migrationExists <- Resource.eval(
         sql"""
           select exists (
@@ -133,5 +142,25 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
   ): Request[IO] =
     cookies.foldLeft(request)((current, cookie) =>
       current.addCookie(RequestCookie(cookie.name, cookie.content))
+    )
+
+  private val temporaryDirectory: Resource[IO, java.nio.file.Path] =
+    Resource.make(IO.blocking(Files.createTempDirectory("cooking-blog-test-")))(directory =>
+      IO.blocking {
+        val stream = Files.walk(directory)
+        try {
+          stream
+            .iterator()
+            .asScala
+            .toList
+            .sortBy(_.getNameCount)
+            .reverse
+            .foreach(path => {
+              val _ = Files.deleteIfExists(path)
+            })
+        } finally {
+          stream.close()
+        }
+      }
     )
 }

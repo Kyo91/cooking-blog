@@ -32,6 +32,9 @@ trait PhotoRepository[F[_]] {
   def update(photo: Photo): F[Boolean]
   def delete(id: PhotoId): F[Boolean]
   def listByMeal(mealId: MealId): F[List[Photo]]
+  def listByRecipe(recipeId: RecipeId): F[List[Photo]]
+  def listStorageKeys: F[List[String]]
+  def findPrimaryForRecipe(recipeId: RecipeId): F[Option[Photo]]
 }
 
 trait RecipeReferenceRepository[F[_]] {
@@ -399,6 +402,36 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
       where meal_id = ${MealId.value(mealId)}
       order by created_at, id
     """.query[PhotoRow].to[List].map(_.map(photo))
+
+  override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[Photo]] =
+    sql"""
+      select p.id, p.meal_id, p.storage_key, p.original_filename, p.content_type,
+             p.byte_size, p.width, p.height, p.comment, p.created_at, p.updated_at
+      from photos p
+      join meals m on m.id = p.meal_id
+      where m.recipe_id = ${RecipeId.value(recipeId)}
+      order by m.cooked_at desc, p.created_at desc, p.id
+    """.query[PhotoRow].to[List].map(_.map(photo))
+
+  override def listStorageKeys: ConnectionIO[List[String]] =
+    sql"select storage_key from photos".query[String].to[List]
+
+  override def findPrimaryForRecipe(
+      recipeId: RecipeId
+  ): ConnectionIO[Option[Photo]] =
+    sql"""
+      select p.id, p.meal_id, p.storage_key, p.original_filename, p.content_type,
+             p.byte_size, p.width, p.height, p.comment, p.created_at, p.updated_at
+      from recipes r
+      join meals m on m.recipe_id = r.id
+      join photos p on p.meal_id = m.id
+      where r.id = ${RecipeId.value(recipeId)}
+      order by (p.id = r.primary_photo_id) desc,
+               m.cooked_at desc,
+               p.created_at desc,
+               p.id
+      limit 1
+    """.query[PhotoRow].option.map(_.map(photo))
 }
 
 private object DoobieRecipeReferenceRepository extends RecipeReferenceRepository[ConnectionIO] {

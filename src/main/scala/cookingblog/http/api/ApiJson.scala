@@ -34,6 +34,10 @@ object ApiJson {
 
   given Encoder[Recipe] = deriveEncoder
   given Encoder[Meal] = deriveEncoder
+  given Encoder[Photo] = {
+    val base: Encoder.AsObject[Photo] = deriveEncoder
+    Encoder.AsObject.instance(photo => base.encodeObject(photo).remove("storageKey"))
+  }
   given Encoder[RecipeReference] = {
     val base: Encoder.AsObject[RecipeReference] = deriveEncoder
     Encoder.AsObject.instance(reference =>
@@ -57,4 +61,5 @@ object ApiJson {
   given Decoder[UpdateMealInput] = deriveDecoder
   given Decoder[CreateReferenceInput] = deriveDecoder
   given Decoder[UpdateReferenceInput] = deriveDecoder
+  given Decoder[UpdatePhotoInput] = deriveDecoder
 }
