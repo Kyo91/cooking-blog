@@ -1,0 +1,409 @@
+openapi: 3.1.0
+info:
+  title: Cooking Blog API
+  version: 0.3.0
+  description: Authenticated Phase 3 recipe, meal, and reference API.
+servers:
+  - url: http://localhost:8080
+security:
+  - sessionCookie: []
+paths:
+  /api/v1/recipes:
+    get:
+      operationId: listRecipes
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [recent, updated, title], default: recent }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of recipes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipePage" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createRecipe
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRecipe" }
+      responses:
+        "201":
+          description: Recipe created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recipe" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/recipes/{recipeId}:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+    get:
+      operationId: getRecipe
+      responses:
+        "200":
+          description: Recipe found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recipe" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateRecipe
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateRecipe" }
+      responses:
+        "200":
+          description: Recipe updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recipe" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      operationId: deleteRecipe
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "204": { description: Recipe permanently deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recipes/{recipeId}/meals:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+    post:
+      operationId: createMeal
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMeal" }
+      responses:
+        "201":
+          description: Meal created and recipe lastMadeAt refreshed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Meal" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/recipes/{recipeId}/meals/{mealId}:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/MealId" }
+    get:
+      operationId: getMeal
+      responses:
+        "200":
+          description: Meal found beneath the requested recipe.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Meal" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+    patch:
+      operationId: updateMeal
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMeal" }
+      responses:
+        "200":
+          description: Meal updated and recipe lastMadeAt recomputed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Meal" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+    delete:
+      operationId: deleteMeal
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "204": { description: Meal deleted and recipe lastMadeAt recomputed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+  /api/v1/recipes/{recipeId}/references:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+    post:
+      operationId: createReference
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      description: URL references and their pending scrape jobs are committed atomically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReference" }
+      responses:
+        "201":
+          description: Reference created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipeReference" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/recipes/{recipeId}/references/{referenceId}:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/ReferenceId" }
+    patch:
+      operationId: updateReference
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      description: Changing a URL commits a new pending scrape job atomically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateReference" }
+      responses:
+        "200":
+          description: Reference updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipeReference" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+    delete:
+      operationId: deleteReference
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "204": { description: Reference and queued jobs permanently deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+  /api/v1/recipes/{recipeId}/references/{referenceId}/scrape:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/ReferenceId" }
+    post:
+      operationId: retryReferenceScrape
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "202":
+          description: A pending scrape job was durably queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScrapeJob" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: cooking_blog_session
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+    RecipeId:
+      name: recipeId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MealId:
+      name: mealId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReferenceId:
+      name: referenceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: No active authenticated session.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidCsrf:
+      description: The mutation is missing a valid CSRF token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: One or more request fields are invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: A uniqueness constraint conflicts with an existing record.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidRelationship:
+      description: The nested resource does not belong to the recipe in the path.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Recipe:
+      type: object
+      required: [id, title, description, primaryPhotoId, createdAt, updatedAt, lastMadeAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 20000 }
+        primaryPhotoId: { type: [string, "null"], format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastMadeAt: { type: [string, "null"], format: date-time }
+    RecipePage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Recipe" }
+        nextCursor: { type: [string, "null"] }
+    CreateRecipe:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 20000, default: "" }
+    UpdateRecipe:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 20000 }
+    Meal:
+      type: object
+      required: [id, recipeId, notes, cookedAt, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        recipeId: { type: string, format: uuid }
+        notes: { type: string, maxLength: 20000 }
+        cookedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateMeal:
+      type: object
+      required: [cookedAt]
+      properties:
+        notes: { type: string, maxLength: 20000, default: "" }
+        cookedAt: { type: string, format: date-time }
+    UpdateMeal:
+      type: object
+      minProperties: 1
+      properties:
+        notes: { type: string, maxLength: 20000 }
+        cookedAt: { type: string, format: date-time }
+    RecipeReference:
+      type: object
+      required: [id, recipeId, kind, url, citation, displayName, importStatus, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        recipeId: { type: string, format: uuid }
+        kind: { type: string, enum: [url, book] }
+        url: { type: [string, "null"], maxLength: 4000 }
+        citation: { type: [string, "null"], maxLength: 4000 }
+        displayName: { type: [string, "null"], maxLength: 500 }
+        importStatus: { type: [string, "null"], enum: [pending, running, succeeded, failed, null] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateReference:
+      oneOf:
+        - type: object
+          required: [kind, url]
+          properties:
+            kind: { const: url }
+            url: { type: string, format: uri, maxLength: 4000 }
+            displayName: { type: string, maxLength: 500 }
+        - type: object
+          required: [kind, citation]
+          properties:
+            kind: { const: book }
+            citation: { type: string, maxLength: 4000 }
+            displayName: { type: string, maxLength: 500 }
+    UpdateReference:
+      type: object
+      minProperties: 1
+      properties:
+        url: { type: string, format: uri, maxLength: 4000 }
+        citation: { type: string, maxLength: 4000 }
+        displayName: { type: string, maxLength: 500 }
+    ScrapeJob:
+      type: object
+      required: [id, referenceId, status, attemptCount, availableAt, claimedAt, finishedAt, lastError, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        referenceId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, succeeded, failed] }
+        attemptCount: { type: integer, minimum: 0 }
+        availableAt: { type: string, format: date-time }
+        claimedAt: { type: [string, "null"], format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        lastError: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        fieldErrors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
