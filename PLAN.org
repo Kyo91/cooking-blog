@@ -1,0 +1,639 @@
+#+title: Cooking Blog Implementation Plan
+#+startup: overview
+
+* Purpose
+
+Build a small, reliable Scala 3 application for saving recipes, recording each
+time a recipe is cooked, attaching photos and notes, importing recipe content
+from external pages, and finding saved recipes from partial recollections.
+
+The first release should optimize for quick capture from a phone and simple
+self-hosting. The design should leave clear seams for stronger authentication,
+cloud object storage, and more sophisticated search if they are needed later.
+
+* Product Scope
+
+** MVP outcomes
+
+- Create, view, edit, and delete a recipe.
+- Record a new cooking instance (a meal) for an existing recipe.
+- Add notes and photos to a meal while cooking.
+- Attach one or more web or book references to a recipe.
+- Import readable text from web references in the background.
+- Search recipe titles, descriptions, meal notes, reference details, and
+  imported recipe text.
+- Browse recipe cards ordered by most recently made or updated.
+- View a recipe's complete history, including each meal's timestamp, notes, and
+  photos.
+- Choose a primary photo for a recipe, with a sensible automatic fallback.
+
+** Deferred until after the MVP
+
+- Per-user recipe ownership, sharing, comments, and public visibility.
+- Native mobile applications.
+- Meal planning, shopping lists, nutrition calculation, and ingredient scaling.
+- Automated extraction into a normalized ingredient/instruction model.
+- Image recognition or semantic/vector search.
+- Importing recipes from scanned book pages.
+
+* Confirmed Product and Technical Decisions
+
+- PostgreSQL is the source of truth. Local development uses the PostgreSQL
+  service in =compose.yaml= with development-only credentials.
+- PostgreSQL full-text search plus trigram matching is sufficient for the first
+  release and can be replaced or extended later.
+- The browser UI is server-rendered HTML enhanced with HTMX and small amounts of
+  CSS/JavaScript. This keeps the project primarily Scala while still supporting
+  live search and photo uploads. Scala.js or TypeScript can be evaluated later
+  if the browser experience outgrows this approach.
+- Photos are stored on the local filesystem in development and the first
+  deployment. A =PhotoStore= interface will allow replacement with S3-compatible
+  storage. Expected media growth is no more than approximately 5 GB in the first
+  year.
+- Each uploaded photo is limited to 10 MB (10,000,000 bytes). Accepted formats
+  are JPEG, PNG, and WebP, verified from decoded file content.
+- Recipes, meals, and photos use permanent deletion; there are no audit or
+  soft-deletion requirements. Deleting a recipe cascades to its meals and photo
+  records, and the corresponding photo files are permanently cleaned up.
+- Recipe titles are unique case-insensitively.
+- Authentication is required from the first release. Initially a dummy
+  implementation accepts username =admin= and password =test=.
+- Login sessions have an absolute lifetime of 24 hours and are persisted in
+  PostgreSQL so they survive application restarts.
+- Only the login route is public. Every HTML page, JSON endpoint, media route,
+  health route, and logout action requires an authenticated session.
+- Recipes are a shared collection: every authenticated user can see and modify
+  every recipe. There is no per-user ownership filter.
+- A book reference is stored as structured citation text; only URL references
+  are scraped.
+- The first release is built as a Docker image and run on this laptop. A later
+  release will deploy the same image to a cloud environment.
+- Automated backups are out of scope for the laptop phase. The later cloud
+  deployment will move photos to cloud object storage and PostgreSQL backups to
+  a managed third-party provider.
+
+* Proposed Technical Architecture
+
+** Runtime and libraries
+
+- Scala 3 on a current LTS JDK.
+- sbt with dependency versions centralized in =project/Dependencies.scala=.
+- Cats Effect 3 for resource management, concurrency, and application lifecycle.
+- http4s for the HTTP server, routes, multipart uploads, and HTTP client.
+- Circe for JSON request/response encoding.
+- doobie with HikariCP for PostgreSQL access.
+- Flyway for ordered database migrations.
+- ScalaTags for server-rendered HTML.
+- HTMX for debounced search and small page updates.
+- http4s authentication middleware backed by an =Authenticator[F]= interface.
+- Weaver or MUnit Cats Effect for tests.
+- Log4Cats with an SLF4J backend for structured logging.
+- PureConfig or Ciris for validated environment-based configuration.
+
+Pin exact versions when the project is initialized, rather than recording
+versions in this plan, so the supported current releases can be checked at that
+time.
+
+** Components
+
+#+begin_src text
+Browser
+  |
+  v
+http4s routes
+  |-- Public login route
+  |-- Authentication middleware
+      |-- HTML controllers/templates
+      |-- JSON CRUD API
+  |
+  v
+Services (validation and use cases)
+  |-- RecipeService
+  |-- MealService
+  |-- PhotoService ------> PhotoStore
+  |-- SearchService
+  |-- ScrapeService -----> http4s client
+  |
+  v
+DAO algebra + doobie implementation
+  |
+  v
+PostgreSQL <---- durable scrape-job worker
+#+end_src
+
+Keep HTTP, business logic, persistence, and external I/O separate. Define DAO
+and storage interfaces in terms of =F[_]=, provide production interpreters, and
+use transactional programs when a use case changes multiple tables.
+
+** Suggested source layout
+
+#+begin_src text
+src/main/scala/.../
+  Main.scala
+  config/
+  domain/
+  repository/
+  service/
+  auth/
+  scraping/
+  storage/
+  http/
+    api/
+    pages/
+    templates/
+src/main/resources/
+  db/migration/
+  public/
+src/test/scala/.../
+#+end_src
+
+Use a single sbt module initially. Split modules only when compilation boundaries
+or independent deployment make the extra structure worthwhile.
+
+** Authentication boundary
+
+- Define an =Authenticator[F]= algebra that verifies credentials and returns a
+  small =Principal= value. The initial interpreter accepts only =admin= / =test=;
+  keep those development credentials in typed development configuration rather
+  than scattering them through route code.
+- =GET /login= renders the login form and =POST /login= authenticates it. These
+  are the only unauthenticated routes.
+- On success, issue a secure, HTTP-only, same-site session cookie and redirect to
+  the originally requested page or the home page.
+- Store only a cryptographic hash of the opaque session token in PostgreSQL.
+  Sessions expire 24 hours after login regardless of activity and therefore
+  remain valid across application restarts.
+- Wrap the composed HTML, API, media, static-resource, health, and logout routes
+  in one authentication middleware boundary so a route cannot accidentally be
+  left unprotected.
+- Redirect unauthenticated browser requests to =/login=. Return =401
+  Unauthorized= for unauthenticated JSON requests.
+- =POST /logout= invalidates the session. It is itself an authenticated route.
+- Periodically delete expired and invalidated session records.
+- Protect all state-changing form and API requests against CSRF. Rotate the
+  session identifier on login and do not place the password in logs.
+- Keep recipe data shared rather than adding an owner/user foreign key. A future
+  real authenticator can replace the dummy interpreter without changing recipe
+  authorization.
+
+* Data Model
+
+Use UUID primary keys, =timestamptz= timestamps stored in UTC, and database
+constraints for invariants. The application should supply a =Clock[F]= so time
+is deterministic in tests.
+
+** =auth_sessions=
+
+- =token_hash text primary key=
+- =principal text not null=
+- =csrf_secret_hash text not null=
+- =created_at timestamptz not null=
+- =expires_at timestamptz not null=
+- =invalidated_at timestamptz null=
+- Index on =expires_at= for lookup and cleanup.
+
+Generate session and CSRF secrets with a cryptographically secure random source,
+send only the opaque session token to the browser, and persist only its hash.
+Session validation requires a matching, non-invalidated row whose =expires_at=
+is in the future. The initial principal is =admin=; the table deliberately does
+not create per-user recipe ownership.
+
+** =recipes=
+
+- =id uuid primary key=
+- =title text not null=
+- =description text not null default ''=
+- =primary_photo_id uuid null=; add its foreign key after =photos= exists
+- =created_at timestamptz not null=
+- =updated_at timestamptz not null=
+- =last_made_at timestamptz null=
+- Unique index on =lower(title)=.
+
+Do not make =last_made_at= the sole source of truth. It is a cached value for
+sorting and must be updated in the same transaction as meal creation/deletion,
+or recomputed from meals when needed.
+
+** =meals=
+
+- =id uuid primary key=
+- =recipe_id uuid not null references recipes(id) on delete cascade=
+- =notes text not null default ''=
+- =cooked_at timestamptz not null=
+- =created_at timestamptz not null=
+- =updated_at timestamptz not null=
+- Index on =(recipe_id, cooked_at desc)=.
+
+Use =cooked_at= separately from =created_at= so an older cooking event can be
+entered later.
+
+** =photos=
+
+- =id uuid primary key=
+- =meal_id uuid not null references meals(id) on delete cascade=
+- =storage_key text not null unique=
+- =original_filename text not null=
+- =content_type text not null=
+- =byte_size bigint not null=
+- =width integer null=
+- =height integer null=
+- =comment text null=
+- =created_at timestamptz not null=
+- =updated_at timestamptz not null=
+- Index on =(meal_id, created_at)=.
+
+Omit =recipe_id= because it can be reached through =meal_id=; storing both would
+allow them to disagree. Check in the service that a selected primary photo
+belongs to the recipe.
+
+** =recipe_references=
+
+- =id uuid primary key=
+- =recipe_id uuid not null references recipes(id) on delete cascade=
+- =kind text not null= constrained to =url= or =book=
+- =url text null=
+- =citation text null=
+- =display_name text null=
+- =created_at timestamptz not null=
+- =updated_at timestamptz not null=
+- Constraint requiring a URL for =url= and citation text for =book=.
+- Unique normalized URL per recipe where kind is =url=.
+
+References are a separate table because a recipe may have multiple sources.
+
+** =scraped_documents=
+
+- =id uuid primary key=
+- =reference_id uuid not null unique references recipe_references(id) on delete
+  cascade=
+- =source_url text not null=
+- =resolved_url text null=
+- =title text null=
+- =content_text text not null=
+- =content_hash text not null=
+- =http_etag text null=
+- =http_last_modified text null=
+- =scraped_at timestamptz not null=
+- =updated_at timestamptz not null=
+
+Keep raw HTML out of the initial database unless debugging shows it is needed.
+Store extracted readable text and source metadata.
+
+** =scrape_jobs=
+
+- =id uuid primary key=
+- =reference_id uuid not null references recipe_references(id) on delete cascade=
+- =status text not null= constrained to =pending=, =running=, =succeeded=, or
+  =failed=
+- =attempt_count integer not null default 0=
+- =available_at timestamptz not null=
+- =claimed_at timestamptz null=
+- =finished_at timestamptz null=
+- =last_error text null=
+- =created_at timestamptz not null=
+- =updated_at timestamptz not null=
+- Partial index over runnable jobs.
+
+A durable database queue prevents imports from disappearing on restart. Claim
+jobs with =FOR UPDATE SKIP LOCKED= so worker concurrency can be increased safely.
+
+** Search document
+
+Create a denormalized =recipe_search_documents= table (or materialized search
+column) containing one row per recipe:
+
+- =recipe_id uuid primary key=
+- =plain_text text not null=
+- =search_vector tsvector not null=
+- =updated_at timestamptz not null=
+
+Build =plain_text= from the title, description, reference labels/citations,
+scraped text, and meal notes. Maintain it explicitly after relevant writes so
+the behavior is easy to test. Add a GIN index to =search_vector= and a trigram
+index for title/phrase fallback. Rank title matches above description, notes,
+and scraped content.
+
+* API and Page Design
+
+Use JSON under =/api/v1= and HTML pages outside that prefix. Return a consistent
+JSON error body containing a machine-readable code, message, and optional field
+errors. Validate IDs, text lengths, media types, upload sizes, and pagination
+parameters at the boundary. Except for =GET /login= and =POST /login=, all
+routes below require an authenticated session.
+
+** Recipe endpoints
+
+- =POST /api/v1/recipes=
+- =GET /api/v1/recipes/:id=
+- =PATCH /api/v1/recipes/:id=
+- =DELETE /api/v1/recipes/:id=
+- =GET /api/v1/recipes?q=&sort=&limit=&cursor==
+- =POST /api/v1/recipes/:id/references=
+- =PATCH /api/v1/recipes/:id/references/:referenceId=
+- =DELETE /api/v1/recipes/:id/references/:referenceId=
+- =POST /api/v1/recipes/:id/references/:referenceId/scrape= to retry or refresh
+- =PUT /api/v1/recipes/:id/primary-photo/:photoId=
+
+Creating or updating a URL reference should commit the reference and a pending
+scrape job in one transaction. The response need not wait for scraping; return
+the reference with its import status.
+
+** Meal and photo endpoints
+
+- =POST /api/v1/recipes/:recipeId/meals=
+- =GET /api/v1/recipes/:recipeId/meals/:mealId=
+- =PATCH /api/v1/recipes/:recipeId/meals/:mealId=
+- =DELETE /api/v1/recipes/:recipeId/meals/:mealId=
+- =POST /api/v1/recipes/:recipeId/meals/:mealId/photos= using multipart form data
+- =PATCH /api/v1/recipes/:recipeId/meals/:mealId/photos/:photoId=
+- =DELETE /api/v1/recipes/:recipeId/meals/:mealId/photos/:photoId=
+- =GET /media/:photoId= or a storage-backed signed/static URL.
+
+Although CRUD operations are scoped beneath a recipe in URLs, repositories can
+remain table-oriented. Services enforce that nested IDs belong together.
+
+** Browser pages
+
+- Home page: search input, =+= action, sort control, and responsive recipe-card
+  grid.
+- Search partial: debounced requests while typing, with an empty-state action
+  that carries the query into the new-recipe form.
+- New/edit recipe page: title, description, and repeatable URL/book references.
+- Recipe detail page: primary image, source/import status, imported content, and
+  meal timeline.
+- New/edit meal page: cooked date/time, notes, camera-friendly multi-photo
+  upload, previews, and captions.
+
+The =+= link should encode the current query as a parameter such as
+=/recipes/new?title=grilled%20chicken= and the server must still validate it.
+
+* Background Scraping
+
+** Processing flow
+
+1. Save the recipe/reference and enqueue a scrape job transactionally.
+2. A supervised Cats Effect worker pool polls and atomically claims ready jobs.
+3. Fetch the URL with strict time, redirect, response-size, and concurrency
+   limits.
+4. Prefer a discoverable print page only when it remains on an allowed HTTP(S)
+   destination and yields useful content.
+5. Extract metadata and readable text; first inspect schema.org
+   =Recipe= JSON-LD, then fall back to main-content extraction.
+6. Upsert the scraped document and rebuild the recipe search document in one
+   transaction.
+7. Mark the job successful. On failure, record a bounded error and retry with
+   exponential backoff plus jitter up to a configured limit.
+8. Show =pending=, =running=, =failed=, and =complete= status in the UI, with a
+   manual retry action.
+
+** Safety and etiquette
+
+- Accept only =http= and =https= URLs.
+- Resolve DNS and reject loopback, link-local, private-network, metadata-service,
+  and other non-public destinations before every request and redirect to prevent
+  SSRF.
+- Set a descriptive user agent and conservative per-host concurrency.
+- Enforce connection, request, and total-job timeouts.
+- Cap redirects and downloaded bytes; reject unsupported content types.
+- Sanitize all extracted content and render it as text, never trusted HTML.
+- Avoid logging page contents, credentials, or URL query secrets.
+- Decide and document the desired robots.txt policy before enabling production
+  scraping.
+
+“Concurrent on submission” therefore means that imports begin asynchronously
+and multiple independent jobs may run in a bounded worker pool. It should not
+mean launching an unsupervised fiber whose work can be lost.
+
+* Photo Handling
+
+- Stream uploads to temporary storage and enforce the 10 MB per-file limit while
+  streaming.
+- Accept JPEG, PNG, and WebP only. Decode and inspect each file; do not trust
+  only the browser-provided MIME type or filename.
+- Generate display and thumbnail variants, strip unsafe metadata, and correct
+  orientation.
+- Write the object first, then insert metadata; compensate by removing the object
+  if the database transaction fails.
+- For deletion, remove the database association transactionally and perform
+  idempotent object cleanup. Periodically detect orphaned objects.
+- Serve immutable variants with cache headers and non-guessable storage keys.
+- Automatically use the latest meal photo when no explicit primary photo is
+  selected.
+
+* Error Handling and Observability
+
+- Model expected service errors as typed values: not found, conflict, validation,
+  invalid relationship, unsupported media, and unavailable dependency.
+- Map errors to stable HTTP statuses and JSON/HTML responses in one place.
+- Attach a request/correlation ID to logs and responses.
+- Log request completion, scrape job lifecycle, retry count, and unexpected
+  failures without logging user content.
+- Expose =/health/live= and =/health/ready=; readiness verifies required
+  dependencies such as the database and writable photo store.
+- Add basic metrics for request latency/errors, queue depth, scrape duration and
+  outcomes, and photo processing failures.
+
+* Security and Data Integrity
+
+- Require authentication globally except for the two login routes, and verify
+  this default-deny boundary with route tests.
+- Treat =admin= / =test= as development-only bootstrap credentials. Before
+  untrusted deployment, replace the dummy interpreter with a real credential
+  store and password hashing without changing the authorization rule.
+- Protect mutation routes from CSRF.
+- Set secure headers and a restrictive content security policy.
+- Parameterize every SQL query through doobie.
+- Limit JSON bodies, multipart bodies, individual files, number of photos per
+  request, and text field lengths.
+- Validate every nested resource relationship.
+- Use database foreign keys, checks, uniqueness rules, and transactions as the
+  final enforcement layer.
+- Back up both PostgreSQL and the photo store together; periodically test a
+  restore.
+
+* Testing Strategy
+
+** Unit tests
+
+- Domain validation and timestamp behavior using a deterministic clock.
+- Search-document construction and ranking weights.
+- Service behavior with in-memory/fake DAO and storage interpreters.
+- Scraper extraction against checked-in HTML fixtures, including JSON-LD, print
+  links, malformed pages, redirects, and oversized responses.
+- Retry/backoff policy and terminal failures.
+
+** Integration tests
+
+- DAO contract suites against a real disposable PostgreSQL instance.
+- Migration from an empty database.
+- Transactional creation of references/jobs and meal/=last_made_at= updates.
+- Full-text and fuzzy-search results for representative recall queries.
+- Authentication tests proving that login is public, =admin= / =test= succeeds,
+  invalid credentials fail, and every other registered route is protected.
+- Session persistence across application restarts, absolute 24-hour expiry,
+  logout, redirect, JSON =401=, and CSRF behavior.
+- HTTP route tests for success, validation, not-found, conflict, and pagination.
+- Multipart upload for JPEG/PNG/WebP, invalid image, 10 MB boundary, oversized
+  file, and cleanup paths.
+- SSRF protection, redirect validation, timeouts, and scrape job claiming.
+
+** End-to-end tests
+
+- Create a recipe from the current search text.
+- Attach a fixture URL and observe asynchronous import completion.
+- Add two separate meals with notes/photos and see both in the timeline.
+- Search using title, meal-note, and imported-content terms.
+- Select and remove a primary photo.
+
+* Delivery Phases
+
+** DONE Phase 0: Resolve product and deployment decisions
+
+- Confirm PostgreSQL search, server-rendered HTML, and local photo storage.
+- Define the authentication and shared-data authorization rules.
+- Define the 24-hour durable session policy.
+- Define the 10 MB JPEG/PNG/WebP upload policy and permanent-deletion behavior.
+- Select a Docker image running on this laptop as the first deployment target.
+- Defer managed backups and cloud object storage to the later cloud deployment.
+
+Exit criterion: deployment constraints and destructive behavior are explicit.
+
+** Phase 1: Bootstrap and infrastructure
+
+- Create the Scala 3/sbt project and package layout.
+- Add formatting, linting, compiler warnings, and test configuration.
+- Add typed configuration, structured logging, and graceful shutdown.
+- Use the PostgreSQL service already defined in =compose.yaml=. The development
+  connection is =jdbc:postgresql://localhost:5432/cooking_blog= with username
+  =cooking_blog= and password =cooking_blog_dev=.
+- Implement the authentication/session boundary and dummy =admin= / =test=
+  authenticator with PostgreSQL-backed 24-hour sessions before adding
+  application routes.
+- Establish CI for formatting, compilation, unit tests, and integration tests.
+
+Exit criterion: a clean checkout can start PostgreSQL, apply migrations, run the
+service, authenticate through the only public route, and pass CI.
+
+** Phase 2: Persistence and domain core
+
+- Add Flyway migrations for recipes, meals, photos, references, scraped
+  documents, jobs, and search documents.
+- Define opaque/validated IDs and domain records.
+- Implement a DAO algebra and doobie interpreter for every table.
+- Add transaction boundaries at the service/use-case layer.
+- Add DAO contract and migration tests.
+
+Exit criterion: all records can be created, read, updated, and deleted with
+constraints and transactional invariants verified.
+
+** Phase 3: Recipe, meal, and reference APIs
+
+- Implement validation, typed errors, cursor pagination, and JSON error mapping.
+- Implement recipe and reference CRUD.
+- Implement meal CRUD and correct =last_made_at= maintenance.
+- Publish an OpenAPI description or checked-in endpoint contract.
+
+Exit criterion: API tests cover the standard CRUD lifecycle and error cases.
+
+** Phase 4: Photos
+
+- Implement =PhotoStore= and local-filesystem interpreter.
+- Add 10 MB streaming multipart validation and safe JPEG/PNG/WebP processing.
+- Implement photo metadata CRUD, primary-photo selection, and cleanup behavior.
+- Document the laptop media directory and the accepted lack of backups for this
+  phase.
+
+Exit criterion: photos can be uploaded from a phone-sized client, displayed,
+captioned, selected as primary, and safely deleted.
+
+** Phase 5: Durable scraping
+
+- Implement transactional job enqueueing and concurrent job claiming.
+- Implement secure HTTP fetching, print-page discovery, and content extraction.
+- Add retry/backoff, stale-job recovery, refresh, and UI/API status.
+- Rebuild search documents after imports.
+
+Exit criterion: a submitted recipe returns immediately, survives an application
+restart while pending, and later exposes searchable imported text.
+
+** Phase 6: Search
+
+- Implement weighted PostgreSQL full-text search and trigram fallback.
+- Include recipe fields, reference information, scraped content, and meal notes.
+- Add deterministic ranking and cursor pagination.
+- Tune against a small representative set such as “grilled chicken,” including
+  expected related recipes.
+
+Exit criterion: acceptance queries find expected recipes with useful ordering
+and acceptable interactive latency.
+
+** Phase 7: Browser experience
+
+- Implement the responsive home grid and debounced search partial.
+- Implement =+= prepopulation from the active query.
+- Implement recipe detail/history and edit flows.
+- Implement meal capture with photo previews and clear upload/import progress.
+- Add accessible labels, keyboard navigation, focus handling, and empty/error
+  states.
+
+Exit criterion: the complete primary workflow is comfortable on both phone and
+desktop without direct API use.
+
+** Phase 8: Laptop deployment and release
+
+- Build the application as a versioned Docker image.
+- Add the application container to Compose with persistent local photo storage,
+  PostgreSQL dependency/health checks, and non-development runtime secrets.
+- Add health checks, metrics, operational logging, and alertable job failures.
+- Add security tests, production limits, CSP/CSRF protections, and secrets
+  handling.
+- Run end-to-end tests against a production-like environment.
+- Document that the laptop release has no backup guarantee and keep the service
+  bound to a trusted interface while it uses the dummy authenticator.
+
+Exit criterion: the versioned image can be deployed, observed, restarted without
+losing sessions or persistent data, and upgraded with documented commands. The
+accepted absence of laptop backups is clearly documented.
+
+The later cloud release must replace the dummy authenticator before exposure to
+an untrusted network, move photos to cloud object storage, configure managed
+PostgreSQL backups, and perform a restore rehearsal.
+
+* Definition of Done for the MVP
+
+- =GET /login= and =POST /login= are the only public routes; =admin= / =test=
+  creates a session and every other route rejects unauthenticated access.
+- Sessions last exactly 24 hours and remain valid across application restarts.
+- All authenticated users access the same shared recipe collection.
+- A user can create a recipe, add references, and continue without waiting for
+  scraping.
+- Scrape work is durable, bounded, observable, retryable, and safe against local
+  network access.
+- A recipe can contain multiple cooking events, each with its own date, notes,
+  and photos.
+- JPEG, PNG, and WebP photos up to 10 MB can be uploaded; other formats and
+  oversized files are rejected safely.
+- The most recent cooking date and chosen/fallback primary photo appear on the
+  home card.
+- Incremental search finds recipes using titles, descriptions, citations,
+  imported text, and meal notes.
+- CRUD endpoints, main pages, migrations, and background jobs have automated
+  coverage for normal and important failure paths.
+- Data constraints prevent orphaned or cross-recipe records.
+- A fresh environment can be started from documentation and the versioned
+  application image can run on this laptop with persistent database and photo
+  volumes.
+
+* Recommended First Vertical Slice
+
+After Phase 1, build one thin end-to-end workflow before filling out every CRUD
+operation:
+
+1. Create a recipe with one URL.
+2. Enqueue and execute its scrape job.
+3. Build its search document.
+4. Find it from the home search box.
+5. Open its detail page.
+
+This validates the highest-risk integration points early: HTTP routes, doobie
+transactions, worker lifecycle, extraction, indexing, and browser interaction.
+Then add meals and photos on top of the proven path.

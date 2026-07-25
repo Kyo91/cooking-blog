@@ -1,0 +1,44 @@
+#+title: Requirements
+
+Notes on requirements and goals for this project.
+
+* Brainstorming
+
+** Initial User Flow
+I want to be able to upload photos while I'm cooking a recipe along with adding any text notes, recipe urls, book references. Any urls provided should be scraped in the background to get the full text content. If the page has a printable version, then that will be used instead. All of this will be cached for full text search so that I can easily find recipes in the future based on some simple recall (e.g. "grilled chicken" will find various recipes of grilled chicken I've made, such as bbq chicken, chicken tacos, etc).
+
+Recipes should be subgrouped by the time I'm cooking it. So if I make recipe X a week ago and then again today, all photos and notes will be available under X, but there will also be sub-entries for each time I made it. So I can see the finished photo from last time I made it. There should be some kind of timestamp tracking on these entries so I can see how recently I made this dish.
+
+The main page will have a text search bar along with a tiling list of recipes. As I type in the text bar, it'll filter the tiling list to only candidates which match. Next to the text bar will be a `+` button, which can be used to create a New Recipe with the text in the search bar auto populating to start.
+** Data Model
+*** Recipe
+High level view of a distinct recipe
+- unique id
+- title (unique)
+- first created timestamp
+- last made timestamp
+- last updated timestamp
+- description text field
+- optional external reference (urls)
+- optional scraped recipe text
+- optional primary photo id (will be used for display purposes)
+*** Meal
+Meals are specific instances of cooking a recipe
+- unique id
+- recipe id (foreign key on recipe.id)
+- created timestamp
+- last updated timestamp
+- notes text field
+*** Photos
+- unique id
+- meal id (foreign key on meal.id)
+- recipe id (foreign key on recipe.id)
+- comment text optional
+- created at timestamp
+- updated at timestamp
+** Technical Requirements
+- API to be built using scala3 + cats-effect3
+- Database integration done through doobie
+- Use best practices for all components (Dao traits for all database tables, composability)
+- Standard CRUD API methods for all endpoints
+- Recipe scraping should happen concurrently on submission
