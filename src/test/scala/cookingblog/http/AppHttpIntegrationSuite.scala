@@ -1,0 +1,137 @@
+package cookingblog.http
+
+import cats.effect.*
+import ciris.Secret
+import cookingblog.auth.*
+import cookingblog.config.{AuthConfig, DatabaseConfig}
+import cookingblog.database.Database
+import doobie.implicits.*
+import munit.CatsEffectSuite
+import org.http4s.*
+import org.http4s.Method.*
+import org.http4s.implicits.*
+import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.noop.NoOpLogger
+
+import java.security.SecureRandom
+import scala.concurrent.duration.*
+
+final class AppHttpIntegrationSuite extends CatsEffectSuite {
+  given Logger[IO] = NoOpLogger[IO]
+
+  private val databaseConfig =
+    DatabaseConfig(
+      sys.env.getOrElse(
+        "DATABASE_URL",
+        "jdbc:postgresql://localhost:5432/cooking_blog"
+      ),
+      sys.env.getOrElse("DATABASE_USER", "cooking_blog"),
+      Secret(sys.env.getOrElse("DATABASE_PASSWORD", "cooking_blog_dev")),
+      poolSize = 2
+    )
+
+  private val authConfig =
+    AuthConfig("admin", Secret("test"), 24.hours, cookieSecure = false)
+
+  test("migrates the database and protects every non-login request") {
+    testApp.use { app =>
+      for {
+        loginPage <- app.run(Request[IO](GET, uri"/login"))
+        anonymousHome <- app.run(Request[IO](GET, uri"/"))
+        anonymousApi <- app.run(
+          Request[IO](GET, uri"/api/v1/recipes")
+            .putHeaders(headers.Accept(MediaType.application.json))
+        )
+        anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
+        anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
+        anonymousLogout <- app.run(Request[IO](POST, uri"/logout"))
+        invalidLogin <- app.run(
+          Request[IO](POST, uri"/login")
+            .withEntity(UrlForm("username" -> "admin", "password" -> "wrong"))
+        )
+        login <- app.run(
+          Request[IO](POST, uri"/login")
+            .withEntity(UrlForm("username" -> "admin", "password" -> "test"))
+        )
+        sessionCookie <- requiredCookie(login, "cooking_blog_session")
+        csrfCookie <- requiredCookie(login, "cooking_blog_csrf")
+        authenticatedHome <- app.run(
+          withCookies(Request[IO](GET, uri"/"), sessionCookie, csrfCookie)
+        )
+        authenticatedHealth <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/health/ready"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        logout <- app.run(
+          withCookies(
+            Request[IO](POST, uri"/logout")
+              .withEntity(UrlForm("csrf_token" -> csrfCookie.content)),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        afterLogout <- app.run(
+          withCookies(Request[IO](GET, uri"/"), sessionCookie, csrfCookie)
+        )
+      } yield {
+        assertEquals(loginPage.status, Status.Ok)
+        assertEquals(anonymousHome.status, Status.SeeOther)
+        assertEquals(anonymousApi.status, Status.Unauthorized)
+        assertEquals(anonymousLive.status, Status.SeeOther)
+        assertEquals(anonymousHealth.status, Status.SeeOther)
+        assertEquals(anonymousLogout.status, Status.SeeOther)
+        assertEquals(invalidLogin.status, Status.Unauthorized)
+        assertEquals(login.status, Status.SeeOther)
+        assertEquals(authenticatedHome.status, Status.Ok)
+        assertEquals(authenticatedHealth.status, Status.Ok)
+        assertEquals(logout.status, Status.SeeOther)
+        assertEquals(afterLogout.status, Status.SeeOther)
+      }
+    }
+  }
+
+  private val testApp: Resource[IO, HttpApp[IO]] =
+    for {
+      _ <- Resource.eval(Database.migrate(databaseConfig))
+      transactor <- Database.transactor(databaseConfig)
+      store = DoobieSessionStore(transactor)
+      random <- Resource.eval(IO.blocking(SecureRandom()))
+      manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
+      credentials = DummyCredentialsAuthenticator[IO](authConfig)
+      http = AppHttp(credentials, manager, transactor, authConfig)
+      migrationExists <- Resource.eval(
+        sql"""
+          select exists (
+            select 1
+            from information_schema.tables
+            where table_schema = 'public'
+              and table_name = 'auth_sessions'
+          )
+        """.query[Boolean].unique.transact(transactor)
+      )
+      _ <- Resource.eval(
+        IO.raiseUnless(migrationExists)(
+          IllegalStateException("auth_sessions migration was not applied")
+        )
+      )
+    } yield http.app
+
+  private def requiredCookie(
+      response: Response[IO],
+      name: String
+  ): IO[ResponseCookie] =
+    IO.fromOption(response.cookies.find(_.name == name))(
+      AssertionError(s"Response did not contain $name cookie")
+    )
+
+  private def withCookies(
+      request: Request[IO],
+      cookies: ResponseCookie*
+  ): Request[IO] =
+    cookies.foldLeft(request)((current, cookie) =>
+      current.addCookie(RequestCookie(cookie.name, cookie.content))
+    )
+}

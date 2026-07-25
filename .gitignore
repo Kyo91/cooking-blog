@@ -1,0 +1,16 @@
+.bloop/
+.bsp/
+.idea/
+.metals/
+.scala-build/
+.sbt-cache/
+.vscode/
+target/
+project/project/
+project/target/
+project/metals.sbt
+
+.env
+*.log
+
+data/photos/

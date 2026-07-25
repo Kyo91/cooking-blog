@@ -497,7 +497,7 @@ mean launching an unsupervised fiber whose work can be lost.
 
 Exit criterion: deployment constraints and destructive behavior are explicit.
 
-** Phase 1: Bootstrap and infrastructure
+** DONE Phase 1: Bootstrap and infrastructure
 
 - Create the Scala 3/sbt project and package layout.
 - Add formatting, linting, compiler warnings, and test configuration.
@@ -513,10 +513,19 @@ Exit criterion: deployment constraints and destructive behavior are explicit.
 Exit criterion: a clean checkout can start PostgreSQL, apply migrations, run the
 service, authenticate through the only public route, and pass CI.
 
+Implemented with Scala 3.8.4, sbt 1.12.0, Java 21-targeted bytecode, http4s,
+Cats Effect, doobie/HikariCP, Flyway, Ciris, Log4Cats, ScalaTags, MUnit Cats
+Effect, strict compiler warnings, Scalafmt, and GitHub Actions CI. The
+=auth_sessions= migration, dummy authenticator, 24-hour database-backed
+sessions, CSRF-protected logout, protected health routes, configuration,
+structured logging, and graceful resource shutdown are in place. Classical
+brace syntax is enforced with the Scala compiler's =-no-indent= option.
+
 ** Phase 2: Persistence and domain core
 
 - Add Flyway migrations for recipes, meals, photos, references, scraped
-  documents, jobs, and search documents.
+  documents, jobs, and search documents; the authentication-session migration
+  already exists.
 - Define opaque/validated IDs and domain records.
 - Implement a DAO algebra and doobie interpreter for every table.
 - Add transaction boundaries at the service/use-case layer.
