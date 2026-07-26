@@ -26,6 +26,8 @@ object ApiJson {
     Encoder.encodeString.contramap(id => PhotoId.value(id).toString)
   given Encoder[ScrapeJobId] =
     Encoder.encodeString.contramap(id => ScrapeJobId.value(id).toString)
+  given Encoder[ScrapedDocumentId] =
+    Encoder.encodeString.contramap(id => ScrapedDocumentId.value(id).toString)
 
   given Encoder[ReferenceKind] =
     Encoder.encodeString.contramap(_.databaseValue)
@@ -53,6 +55,8 @@ object ApiJson {
     )
   }
   given Encoder[ScrapeJob] = deriveEncoder
+  given Encoder[ScrapedDocument] = deriveEncoder
+  given Encoder[ReferenceScrapeStatus] = deriveEncoder
   given Encoder[RecipePage] = deriveEncoder
 
   given Decoder[CreateRecipeInput] = deriveDecoder

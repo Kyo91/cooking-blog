@@ -56,6 +56,13 @@ trait ScrapedDocumentRepository[F[_]] {
 trait ScrapeJobRepository[F[_]] {
   def create(job: ScrapeJob): F[Unit]
   def find(id: ScrapeJobId): F[Option[ScrapeJob]]
+  def findLatestByReference(referenceId: ReferenceId): F[Option[ScrapeJob]]
+  def claimNext(availableAt: Instant): F[Option[ScrapeJob]]
+  def recoverStale(
+      claimedBefore: Instant,
+      recoveredAt: Instant,
+      maximumAttempts: Int
+  ): F[Int]
   def update(job: ScrapeJob): F[Boolean]
   def delete(id: ScrapeJobId): F[Boolean]
   def listByReference(referenceId: ReferenceId): F[List[ScrapeJob]]
@@ -576,6 +583,74 @@ private object DoobieScrapeJobRepository extends ScrapeJobRepository[ConnectionI
 
   override def find(id: ScrapeJobId): ConnectionIO[Option[ScrapeJob]] =
     select(fr"where id = ${ScrapeJobId.value(id)}").option
+
+  override def findLatestByReference(
+      referenceId: ReferenceId
+  ): ConnectionIO[Option[ScrapeJob]] =
+    select(
+      fr"""
+        where reference_id = ${ReferenceId.value(referenceId)}
+        order by created_at desc, id desc
+        limit 1
+      """
+    ).option
+
+  override def claimNext(availableAt: Instant): ConnectionIO[Option[ScrapeJob]] =
+    sql"""
+      with candidate as (
+        select pending.id
+        from scrape_jobs pending
+        where pending.status = 'pending'
+          and pending.available_at <= $availableAt
+          and not exists (
+            select 1
+            from scrape_jobs active
+            where active.reference_id = pending.reference_id
+              and active.status = 'running'
+          )
+        order by pending.available_at, pending.created_at, pending.id
+        for update skip locked
+        limit 1
+      )
+      update scrape_jobs job
+      set status = 'running',
+          attempt_count = job.attempt_count + 1,
+          claimed_at = $availableAt,
+          finished_at = null,
+          last_error = null,
+          updated_at = $availableAt
+      from candidate
+      where job.id = candidate.id
+      returning job.id, job.reference_id, job.status, job.attempt_count,
+                job.available_at, job.claimed_at, job.finished_at,
+                job.last_error, job.created_at, job.updated_at
+    """.query[ScrapeJobRow].map(scrapeJob).option
+
+  override def recoverStale(
+      claimedBefore: Instant,
+      recoveredAt: Instant,
+      maximumAttempts: Int
+  ): ConnectionIO[Int] =
+    sql"""
+      update scrape_jobs
+      set status =
+            case when attempt_count >= $maximumAttempts then 'failed'
+                 else 'pending'
+            end,
+          available_at = $recoveredAt,
+          claimed_at =
+            case when attempt_count >= $maximumAttempts then claimed_at
+                 else null
+            end,
+          finished_at =
+            case when attempt_count >= $maximumAttempts then $recoveredAt
+                 else null
+            end,
+          last_error = 'Recovered after the worker stopped before completing the job',
+          updated_at = $recoveredAt
+      where status = 'running'
+        and claimed_at < $claimedBefore
+    """.update.run
 
   override def update(job: ScrapeJob): ConnectionIO[Boolean] =
     sql"""

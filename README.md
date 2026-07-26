@@ -62,6 +62,41 @@ records contain opaque storage keys; do not rename files within this directory.
 The laptop phase deliberately has no automated photo or PostgreSQL backups.
 Deleting a photo, meal, or recipe permanently removes its photo files.
 
+## Recipe imports
+
+Creating a URL reference commits a pending scrape job in the same PostgreSQL
+transaction and returns immediately. A supervised worker pool claims durable
+jobs with PostgreSQL row locking, imports readable recipe text, and rebuilds the
+recipe search document. Pending work survives application restarts. Use
+`GET /api/v1/recipes/{recipeId}/references/{referenceId}/scrape` to read the
+latest status and imported text, and `POST` to the same path to refresh or retry
+an import.
+
+The scraper accepts public HTTP(S) destinations only. It resolves and rejects
+loopback, private, link-local, metadata-service, documentation, carrier-grade
+NAT, multicast, and other non-public addresses before every request and
+redirect. Redirect count, response bytes, request time, total job time, global
+worker count, and per-host connections are bounded. Recipe JSON-LD is preferred;
+readable main content is the fallback, and a discovered print page is used only
+when it passes the same checks and yields useful text.
+
+Robots policy for the laptop release: imports are explicit, user-initiated
+personal archival requests, so the worker does not fetch or interpret
+`robots.txt`. It identifies itself, uses one connection per host by default,
+and treats remote `4xx` responses as terminal instead of attempting to bypass
+site policy. Revisit this policy before any multi-user or public deployment.
+
+The deterministic suite includes a checked-in Serious Eats-style fixture. To
+exercise the optional network test against the original example URL:
+
+```sh
+LIVE_SCRAPE_URL=https://www.seriouseats.com/sous-vide-glazed-carrots-recipe \
+  sbt "testOnly cookingblog.scraping.LiveScrapeSuite"
+```
+
+This test intentionally fails if the remote site rejects automated access; a
+remote access policy is not bypassed.
+
 ## Scala style
 
 Use classical braces instead of Scala 3 significant-whitespace syntax. A
@@ -84,6 +119,18 @@ significant-whitespace syntax fails compilation.
 | `AUTH_SESSION_HOURS` | `24` | Absolute session lifetime |
 | `AUTH_COOKIE_SECURE` | `false` | Require HTTPS for auth cookies |
 | `PHOTO_DIRECTORY` | `./data/photos` | Persistent local photo storage |
+| `SCRAPE_WORKERS` | `2` | Concurrent durable job workers |
+| `SCRAPE_PER_HOST_CONCURRENCY` | `1` | Maximum connections to one host |
+| `SCRAPE_POLL_MILLIS` | `500` | Queue polling interval |
+| `SCRAPE_STALE_JOB_MINUTES` | `5` | Time before an abandoned running job is recovered |
+| `SCRAPE_REQUEST_SECONDS` | `15` | Per-request/header timeout |
+| `SCRAPE_TOTAL_JOB_SECONDS` | `45` | Total timeout for one job attempt |
+| `SCRAPE_MAX_RESPONSE_BYTES` | `2000000` | Maximum downloaded HTML bytes |
+| `SCRAPE_MAX_REDIRECTS` | `5` | Maximum redirects per fetch |
+| `SCRAPE_MAX_ATTEMPTS` | `5` | Attempts before terminal failure |
+| `SCRAPE_BASE_RETRY_SECONDS` | `30` | Initial exponential retry delay |
+| `SCRAPE_MAX_RETRY_MINUTES` | `60` | Maximum jittered retry delay |
+| `SCRAPE_USER_AGENT` | `CookingBlog/0.1 (+personal recipe archive)` | HTTP identification |
 
 All defaults are for local development only. Supply runtime secrets through the
 environment for any packaged deployment.

@@ -27,6 +27,13 @@ final case class RecipePage(
     nextCursor: Option[String]
 )
 
+final case class ReferenceScrapeStatus(
+    referenceId: ReferenceId,
+    importStatus: String,
+    latestJob: Option[ScrapeJob],
+    document: Option[ScrapedDocument]
+)
+
 final case class CreateRecipeInput(title: String, description: Option[String])
 final case class UpdateRecipeInput(
     title: Option[String],
