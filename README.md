@@ -46,6 +46,17 @@ The checked-in API contract is in
 [`docs/openapi.yaml`](docs/openapi.yaml). API mutations require the CSRF secret
 from the `cooking_blog_csrf` cookie in the `X-CSRF-Token` header.
 
+## Search
+
+`GET /api/v1/recipes?q=grilled+chicken` uses PostgreSQL full-text ranking with
+title matches weighted above comma-separated recipe keywords, descriptions and
+references, then meal notes and imported text. A title trigram fallback handles
+partial recollections and misspellings. Results with a query use deterministic
+relevance order by default; `sort=title` or `sort=updated` explicitly applies
+that alternate order. Recipe create and update requests accept an optional
+`keywords` string: entries are split on commas, trimmed, blank entries are
+discarded, and duplicates are removed case-insensitively.
+
 Photo uploads use multipart form data with one or more `photo` fields (up to 10
 per request) and an optional `comment` field. Each photo must decode as JPEG,
 PNG, or WebP and must be no larger than 10,000,000 bytes. The service corrects

@@ -38,7 +38,8 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
         "recipe_references",
         "scraped_documents",
         "scrape_jobs",
-        "recipe_search_documents"
+        "recipe_search_documents",
+        "recipe_keywords"
       )
 
       sql"""
@@ -52,7 +53,8 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
             'recipe_references',
             'scraped_documents',
             'scrape_jobs',
-            'recipe_search_documents'
+            'recipe_search_documents',
+            'recipe_keywords'
           )
       """.query[String].to[Set].transact(transactor).map { actual =>
         assertEquals(actual, expected)

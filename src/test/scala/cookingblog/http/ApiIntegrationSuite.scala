@@ -332,6 +332,64 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
     }
   }
 
+  test("ranked search uses normalized keywords and title trigram fallback") {
+    testApp.use { app =>
+      val suffix = UUID.randomUUID().toString.take(8)
+      for {
+        auth <- login(app)
+        titleMatch <- app.run(
+          auth.request(
+            jsonRequest(
+              POST,
+              "/api/v1/recipes",
+              Json.obj(
+                "title" -> Json.fromString(s"Grilled Chicken $suffix"),
+                "keywords" -> Json.fromString("summer, grill")
+              )
+            )
+          )
+        )
+        keywordMatch <- app.run(
+          auth.request(
+            jsonRequest(
+              POST,
+              "/api/v1/recipes",
+              Json.obj(
+                "title" -> Json.fromString(s"Smoky Drumsticks $suffix"),
+                "keywords" -> Json.fromString(" grilled chicken , GrillED Chicken, weeknight ")
+              )
+            )
+          )
+        )
+        titleResult <- responseJson(titleMatch)
+        titleId <- jsonString(titleResult, "id")
+        keywordResult <- responseJson(keywordMatch)
+        keywordId <- jsonString(keywordResult, "id")
+        ranked <- get(app, auth, s"/api/v1/recipes?q=grilled%20chicken%20$suffix")
+        rankedJson <- responseJson(ranked)
+        rankedTitles <- itemTitles(rankedJson)
+        keywordOnly <- get(app, auth, "/api/v1/recipes?q=grilled%20chicken")
+        keywordOnlyJson <- responseJson(keywordOnly)
+        keywordOnlyIds <- itemIds(keywordOnlyJson)
+        typo <- get(app, auth, s"/api/v1/recipes?q=griled%20chicken%20$suffix")
+        typoJson <- responseJson(typo)
+        typoIds <- itemIds(typoJson)
+        _ <- delete(app, auth, s"/api/v1/recipes/$titleId")
+        _ <- delete(app, auth, s"/api/v1/recipes/$keywordId")
+      } yield {
+        assertEquals(titleMatch.status, Status.Created)
+        assertEquals(keywordMatch.status, Status.Created)
+        assertEquals(ranked.status, Status.Ok)
+        assertEquals(
+          rankedTitles.take(2),
+          List(s"Grilled Chicken $suffix", s"Smoky Drumsticks $suffix")
+        )
+        assert(keywordOnlyIds.contains(keywordId))
+        assert(typoIds.contains(titleId))
+      }
+    }
+  }
+
   private final case class Authenticated(
       session: ResponseCookie,
       csrf: ResponseCookie
@@ -445,6 +503,24 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
         .downField("items")
         .downArray
         .get[String]("id")
+        .leftMap(error => RuntimeException(error.message))
+    )
+
+  private def itemTitles(json: Json): IO[List[String]] =
+    IO.fromEither(
+      json.hcursor
+        .downField("items")
+        .as[List[Json]]
+        .flatMap(_.traverse(_.hcursor.get[String]("title")))
+        .leftMap(error => RuntimeException(error.message))
+    )
+
+  private def itemIds(json: Json): IO[List[String]] =
+    IO.fromEither(
+      json.hcursor
+        .downField("items")
+        .as[List[Json]]
+        .flatMap(_.traverse(_.hcursor.get[String]("id")))
         .leftMap(error => RuntimeException(error.message))
     )
 

@@ -155,3 +155,11 @@ final case class RecipeSearchDocument(
     searchVector: String,
     updatedAt: Instant
 )
+
+final case class RecipeKeyword(
+    id: UUID,
+    recipeId: RecipeId,
+    keyword: String
+)
+
+final case class RecipeSearchResult(recipe: Recipe, rank: Double)

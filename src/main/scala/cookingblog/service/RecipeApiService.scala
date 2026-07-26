@@ -23,6 +23,7 @@ final class RecipeApiService(
     scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
     scrapeJobs: ScrapeJobRepository[ConnectionIO],
     searchDocuments: RecipeSearchDocumentRepository[ConnectionIO],
+    keywords: RecipeKeywordRepository[ConnectionIO],
     photoCleanup: PhotoCleanup[IO]
 ) {
   private val MaxTitleLength = 200
@@ -30,28 +31,35 @@ final class RecipeApiService(
   private val MaxNotesLength = 20000
   private val MaxReferenceValueLength = 4000
   private val MaxDisplayNameLength = 500
+  private val MaxKeywordLength = 100
+  private val MaxKeywords = 50
 
   def createRecipe(input: CreateRecipeInput): IO[Either[ApiError, Recipe]] =
-    continue(validateRecipe(input.title, input.description.getOrElse(""))) {
-      case (title, description) =>
-        now.flatMap { timestamp =>
-          val recipe =
-            Recipe(
-              RecipeId.random,
-              title,
-              description,
-              None,
-              timestamp,
-              timestamp,
-              None
-            )
-          val search =
-            RecipeSearchDocument(recipe.id, recipeText(recipe), "", timestamp)
-          transact(recipes.create(recipe) *> searchDocuments.create(search))
-            .as(recipe)
-            .attempt
-            .map(_.leftMap(databaseError))
-        }
+    continue(
+      validateRecipe(input.title, input.description.getOrElse("")).flatMap { recipe =>
+        validateKeywords(input.keywords.getOrElse("")).map((recipe, _).mapN((_, _)))
+      }
+    ) { case ((title, description), recipeKeywords) =>
+      now.flatMap { timestamp =>
+        val recipe =
+          Recipe(
+            RecipeId.random,
+            title,
+            description,
+            None,
+            timestamp,
+            timestamp,
+            None
+          )
+        transact(
+          recipes.create(recipe) *>
+            keywords.replace(recipe.id, recipeKeywords) *>
+            searchDocuments.rebuildSearchDocument(recipe.id, timestamp)
+        )
+          .as(recipe)
+          .attempt
+          .map(_.leftMap(databaseError))
+      }
     }
 
   def getRecipe(id: RecipeId): IO[Either[ApiError, Recipe]] =
@@ -76,22 +84,22 @@ final class RecipeApiService(
     validation match {
       case Left(error)          => IO.pure(Left(error))
       case Right(decodedCursor) =>
-        transact(recipes.list).map { storedRecipes =>
-          val normalizedQuery =
-            query.map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty)
-          val filtered = normalizedQuery.fold(storedRecipes)(needle =>
-            storedRecipes.filter(recipe =>
-              recipe.title.toLowerCase(Locale.ROOT).contains(needle) ||
-                recipe.description.toLowerCase(Locale.ROOT).contains(needle)
-            )
-          )
-          val sorted = sortRecipes(filtered, sort)
+        val normalizedQuery =
+          query.map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty)
+        val stored = normalizedQuery.fold(transact(recipes.list))(value =>
+          transact(searchDocuments.search(value).map(_.map(_.recipe)))
+        )
+        stored.map { storedRecipes =>
+          val filtered = storedRecipes
+          val sorted =
+            if (normalizedQuery.nonEmpty && sort == RecipeSort.Recent) filtered
+            else sortRecipes(filtered, sort)
           val remaining =
             decodedCursor match {
               case None        => Right(sorted)
               case Some(value) =>
                 val index =
-                  sorted.indexWhere(recipe => cursorValue(recipe, sort) == value)
+                  sorted.indexWhere(recipe => cursorBinding(recipe, sort, normalizedQuery) == value)
                 Either.cond(
                   index >= 0,
                   sorted.drop(index + 1),
@@ -108,7 +116,7 @@ final class RecipeApiService(
             val pageItems = values.take(limit)
             val next =
               Option.when(values.size > limit)(
-                encodeCursor(cursorValue(pageItems.last, sort))
+                encodeCursor(cursorBinding(pageItems.last, sort, normalizedQuery))
               )
             RecipePage(pageItems, next)
           }
@@ -120,7 +128,7 @@ final class RecipeApiService(
       id: RecipeId,
       input: UpdateRecipeInput
   ): IO[Either[ApiError, Recipe]] =
-    if (input.title.isEmpty && input.description.isEmpty) {
+    if (input.title.isEmpty && input.description.isEmpty && input.keywords.isEmpty) {
       IO.pure(
         Left(Validation(Map("body" -> List("must contain a field to update"))))
       )
@@ -128,12 +136,16 @@ final class RecipeApiService(
       transact(recipes.find(id)).flatMap {
         case None           => IO.pure(Left(NotFound("recipe")))
         case Some(existing) =>
+          val keywordValidation =
+            input.keywords.fold(IO.pure(Right(None): Either[ApiError, Option[List[String]]])) {
+              raw => validateKeywords(raw).map(_.map(Some(_)))
+            }
           continue(
             validateRecipe(
               input.title.getOrElse(existing.title),
               input.description.getOrElse(existing.description)
-            )
-          ) { case (title, description) =>
+            ).flatMap(recipe => keywordValidation.map((recipe, _).mapN((_, _))))
+          ) { case ((title, description), replacementKeywords) =>
             now.flatMap { timestamp =>
               val updated =
                 existing.copy(
@@ -143,6 +155,7 @@ final class RecipeApiService(
                 )
               transact(
                 recipes.update(updated) *>
+                  replacementKeywords.traverse_(keywords.replace(id, _)) *>
                   searchDocuments.rebuildSearchDocument(id, timestamp)
               ).as(updated).attempt.map(_.leftMap(databaseError))
             }
@@ -593,8 +606,29 @@ final class RecipeApiService(
       timestamp
     )
 
-  private def recipeText(recipe: Recipe): String =
-    List(recipe.title, recipe.description).filter(_.nonEmpty).mkString("\n")
+  private def validateKeywords(raw: String): IO[Either[ApiError, List[String]]] = {
+    val normalized =
+      raw
+        .split(",", -1)
+        .toList
+        .map(_.trim)
+        .filter(_.nonEmpty)
+        .foldLeft(List.empty[String]) { (values, keyword) =>
+          if (values.exists(_.equalsIgnoreCase(keyword))) values else values :+ keyword
+        }
+    val errors =
+      List(
+        Option.when(normalized.size > MaxKeywords)(
+          "must contain at most 50 comma-separated keywords"
+        ),
+        Option.when(normalized.exists(_.length > MaxKeywordLength))(
+          "each keyword must be at most 100 characters"
+        )
+      ).flatten
+    IO.pure(
+      Either.cond(errors.isEmpty, normalized, Validation(Map("keywords" -> errors)))
+    )
+  }
 
   private def sortRecipes(
       recipes: List[Recipe],
@@ -637,6 +671,13 @@ final class RecipeApiService(
       case RecipeSort.Title =>
         s"${recipe.title.toLowerCase(Locale.ROOT)}:${RecipeId.value(recipe.id)}"
     }
+
+  private def cursorBinding(
+      recipe: Recipe,
+      sort: RecipeSort,
+      query: Option[String]
+  ): String =
+    s"${sort.value}\u0000${query.getOrElse("")}\u0000${cursorValue(recipe, sort)}"
 
   private def encodeCursor(value: String): String =
     Base64.getUrlEncoder
@@ -710,6 +751,7 @@ object RecipeApiService {
       DoobieRepositories.scrapedDocuments,
       DoobieRepositories.scrapeJobs,
       DoobieRepositories.searchDocuments,
+      DoobieRepositories.keywords,
       photoCleanup
     )
 }

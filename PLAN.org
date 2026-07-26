@@ -642,7 +642,7 @@ original Serious Eats URL and preserves a remote =403= as a terminal policy
 response instead of bypassing it. The laptop robots policy and scraper limits
 are documented in the README.
 
-** Phase 6: Search
+** DONE Phase 6: Search
 
 - Implement weighted PostgreSQL full-text search and trigram fallback.
 - Add recipe keyword persistence and comma-separated input normalization.
@@ -654,6 +654,17 @@ are documented in the README.
 
 Exit criterion: acceptance queries find expected recipes with useful ordering
 and acceptable interactive latency.
+
+Implemented with PostgreSQL =websearch_to_tsquery= and weighted =tsvector=
+ranking: titles have the highest weight, followed by recipe keywords, then
+descriptions/references, and finally meal notes/imported text. A title trigram
+fallback handles partial and misspelled recall. Recipe keywords are persisted
+with database uniqueness constraints; API input accepts comma-separated text,
+trims entries, drops blanks, and deduplicates case-insensitively. Search order
+is deterministic, and cursors are bound to the normalized query and sort
+order. PostgreSQL-backed API coverage verifies title priority, normalized
+keyword matching, typo fallback, cursor behavior, and the representative
+grilled-chicken query shape.
 
 ** Phase 7: Browser experience
 
