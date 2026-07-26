@@ -138,6 +138,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(newRecipe.status, Status.Ok)
         assert(newRecipeBody.contains("value=\"grilled chicken\""))
         assert(newRecipeBody.contains("id=\"keywords\""))
+        assert(newRecipeBody.contains("id=\"add-recipe-source\""))
         assertEquals(search.status, Status.Ok)
       }
     }

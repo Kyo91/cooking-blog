@@ -630,7 +630,24 @@ final class AppHttp(
             src := s"/media/${id(photo.id)}?variant=thumbnail",
             alt := photo.comment.getOrElse(s"Photo from ${date(meal.cookedAt)}")
           ),
-          figcaption(photo.comment.getOrElse("")),
+          figcaption(
+            form(
+              cls := "api-form photo-caption-form",
+              attr(
+                "data-api"
+              ) := s"/api/v1/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
+              attr("data-method") := "PATCH",
+              label(`for` := s"caption-${id(photo.id)}", "Caption"),
+              input(
+                htmlId := s"caption-${id(photo.id)}",
+                name := "comment",
+                value := photo.comment.getOrElse(""),
+                maxlength := 1000
+              ),
+              p(cls := "form-error", aria.live := "polite", role := "alert"),
+              button(tpe := "submit", "Save caption")
+            )
+          ),
           div(
             cls := "photo-actions",
             button(
@@ -743,7 +760,9 @@ final class AppHttp(
       ),
       body(
         content,
-        Option.when(includeScript)(raw(browserScript + browserEnhancements + browserSortScript))
+        Option.when(includeScript)(
+          raw(browserScript + browserEnhancements + browserSortScript + recipeSourceScript)
+        )
       )
     ).render
   private def authenticate(request: Request[IO]): IO[Option[AuthenticatedSession]] = request.cookies
@@ -822,4 +841,7 @@ final class AppHttp(
 
   private val browserSortScript =
     """<script>(()=>{const original=document.querySelector('#recipe-search'),sort=document.querySelector('#recipe-sort');if(!original||!sort)return;const search=original.cloneNode(true);original.replaceWith(search);let timer;const results=document.querySelector('#recipe-results'),status=document.querySelector('#search-status'),link=document.querySelector('#new-recipe');const run=()=>{const q=search.value,order=sort.value,params=new URLSearchParams({q,sort:order});link.href='/recipes/new?title='+encodeURIComponent(q);history.replaceState(null,'','/?'+params);clearTimeout(timer);timer=setTimeout(async()=>{status.textContent='Searching…';try{results.innerHTML=await (await fetch('/recipes/search?'+params)).text();status.textContent=''}catch(_){status.textContent='Search failed. Try again.'}},250)};search.addEventListener('input',run);sort.addEventListener('change',run)})();</script>"""
+
+  private val recipeSourceScript =
+    """<script>(()=>{const original=document.querySelector('.api-form[data-source-entry]');if(!original)return;const form=original.cloneNode(true);original.replaceWith(form);const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};const report=m=>{const e=form.querySelector('.form-error');e.textContent=m;e.tabIndex=-1;e.focus()};const sources=form.querySelector('#recipe-sources'),add=form.querySelector('#add-recipe-source');const source=()=>{const row=document.createElement('div');row.dataset.source='';row.className='source-row';const kind=document.createElement('select');kind.setAttribute('aria-label','Source type');kind.innerHTML='<option value="url">Recipe URL</option><option value="book">Book citation</option>';const url=document.createElement('input');url.type='url';url.placeholder='https://example.com/recipe';url.required=true;url.setAttribute('aria-label','Recipe URL');const citation=document.createElement('input');citation.placeholder='Book title, author, page';citation.hidden=true;citation.setAttribute('aria-label','Book citation');const remove=document.createElement('button');remove.type='button';remove.textContent='Remove source';remove.addEventListener('click',()=>row.remove());kind.addEventListener('change',()=>{const book=kind.value==='book';url.hidden=book;url.required=!book;citation.hidden=!book;citation.required=book});row.append(kind,url,citation,remove);sources.insertBefore(row,add)};add.addEventListener('click',source);form.addEventListener('submit',async e=>{e.preventDefault();try{const data=Object.fromEntries(new FormData(form).entries());const recipe=await api(form.dataset.api,form.dataset.method,data);for(const row of form.querySelectorAll('[data-source]')){const kind=row.querySelector('select').value,url=row.querySelector('input[type=url]').value,citation=row.querySelector('input:not([type=url])').value;await api(`/api/v1/recipes/${recipe.id}/references`,'POST',kind==='book'?{kind,citation}:{kind,url})}location.href='/recipes/'+recipe.id}catch(x){report(x.message)}})})();</script>"""
 }

@@ -377,6 +377,15 @@ remain table-oriented. Services enforce that nested IDs belong together.
 - New/edit meal page: cooked date/time, notes, camera-friendly multi-photo
   upload, previews, and captions.
 
+*** Frontend follow-up
+
+The first browser implementation may use a small amount of progressively
+enhancing JavaScript alongside server-rendered ScalaTags pages. Keep that code
+as a cohesive static asset rather than growing multiple inline page scripts.
+If browser-side form state, uploads, and live updates become materially more
+complex, evaluate Scala.js as the next frontend boundary; do not introduce it
+until that complexity justifies its build and maintenance cost.
+
 The =+= link should encode the current query as a parameter such as
 =/recipes/new?title=grilled%20chicken= and the server must still validate it.
 
