@@ -100,6 +100,47 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
     }
   }
 
+  test("authenticated browser pages provide searchable recipe capture flow") {
+    testApp.use { app =>
+      for {
+        login <- app.run(
+          Request[IO](POST, uri"/login")
+            .withEntity(UrlForm("username" -> "admin", "password" -> "test"))
+        )
+        sessionCookie <- requiredCookie(login, "cooking_blog_session")
+        csrfCookie <- requiredCookie(login, "cooking_blog_csrf")
+        home <- app.run(
+          withCookies(Request[IO](GET, uri"/?q=grilled+chicken"), sessionCookie, csrfCookie)
+        )
+        homeBody <- home.as[String]
+        newRecipe <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/recipes/new?title=grilled+chicken"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        newRecipeBody <- newRecipe.as[String]
+        search <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/recipes/search?q=grilled+chicken"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+      } yield {
+        assertEquals(home.status, Status.Ok)
+        assert(homeBody.contains("id=\"recipe-search\""))
+        assert(homeBody.contains("id=\"recipe-results\""))
+        assert(homeBody.contains("/recipes/new?title=grilled+chicken"))
+        assertEquals(newRecipe.status, Status.Ok)
+        assert(newRecipeBody.contains("value=\"grilled chicken\""))
+        assert(newRecipeBody.contains("id=\"keywords\""))
+        assertEquals(search.status, Status.Ok)
+      }
+    }
+  }
+
   private val testApp: Resource[IO, HttpApp[IO]] =
     for {
       _ <- Resource.eval(Database.migrate(databaseConfig))
