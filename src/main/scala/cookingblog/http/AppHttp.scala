@@ -7,7 +7,7 @@ import cookingblog.config.AuthConfig
 import cookingblog.domain.*
 import cookingblog.http.api.ApiRoutes
 import cookingblog.repository.DoobieRepositories
-import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService, RecipeSort}
+import cookingblog.service.*
 import cookingblog.storage.PhotoStore
 import doobie.Transactor
 import doobie.implicits.*
@@ -114,6 +114,10 @@ final class AppHttp(
 
   private def protectedRoutes(session: AuthenticatedSession): HttpRoutes[IO] =
     apiRoutes.routes(session) <+> browserRoutes(session) <+> HttpRoutes.of[IO] {
+      case GET -> Root / "static" / "htmx-2.0.4.min.js" =>
+        staticAsset("public/htmx.min.js", MediaType.application.javascript)
+      case GET -> Root / "static" / "app-v1.js" =>
+        staticAsset("public/app-v1.js", MediaType.application.javascript)
       case GET -> Root / "health" / "live" =>
         Ok("""{"status":"ok"}""").map(_.withContentType(`Content-Type`(MediaType.application.json)))
       case GET -> Root / "health" / "ready" =>
@@ -148,6 +152,177 @@ final class AppHttp(
     }
 
   private def browserRoutes(session: AuthenticatedSession): HttpRoutes[IO] = HttpRoutes.of[IO] {
+    case request @ POST -> Root / "recipes" =>
+      browserMutation(session, request) { form =>
+        recipeService.createRecipe(createRecipeInput(form)).flatMap {
+          case Right(recipe) =>
+            createFormReferences(recipe.id, form).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipe.id)}")))
+              case Left(error) => formFailure(error)
+            }
+          case Left(error) => formFailure(error)
+        }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId =>
+      recipeId(rawRecipeId).fold(notFoundPage) { recipeIdValue =>
+        browserMutation(session, request) { form =>
+          recipeService.updateRecipe(recipeIdValue, updateRecipeInput(form)).flatMap {
+            case Right(_) =>
+              replaceFormReferences(recipeIdValue, form).flatMap {
+                case Right(_) =>
+                  SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+                case Left(error) => formFailure(error)
+              }
+            case Left(error) => formFailure(error)
+          }
+        }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "delete" =>
+      recipeId(rawRecipeId).fold(notFoundPage) { recipeIdValue =>
+        browserMutation(session, request) { _ =>
+          recipeService.deleteRecipe(recipeIdValue).flatMap {
+            case Right(_)    => SeeOther(Location(Uri.unsafeFromString("/")))
+            case Left(error) => formFailure(error)
+          }
+        }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "meals" =>
+      recipeId(rawRecipeId).fold(notFoundPage) { recipeIdValue =>
+        browserMutation(session, request) { form =>
+          mealInput(form).fold(
+            formFailure,
+            input =>
+              recipeService.createMeal(recipeIdValue, input).flatMap {
+                case Right(meal) =>
+                  SeeOther(
+                    Location(
+                      Uri.unsafeFromString(
+                        s"/recipes/${id(recipeIdValue)}/meals/${id(meal.id)}/edit"
+                      )
+                    )
+                  )
+                case Left(error) => formFailure(error)
+              }
+          )
+        }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "meals" / rawMealId =>
+      (recipeId(rawRecipeId), mealId(rawMealId)).mapN((_, _)).fold(notFoundPage) {
+        case (recipeIdValue, mealIdValue) =>
+          browserMutation(session, request) { form =>
+            mealUpdateInput(form).fold(
+              formFailure,
+              input =>
+                recipeService.updateMeal(recipeIdValue, mealIdValue, input).flatMap {
+                  case Right(_) =>
+                    SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+                  case Left(error) => formFailure(error)
+                }
+            )
+          }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "references" =>
+      recipeId(rawRecipeId).fold(notFoundPage) { recipeIdValue =>
+        browserMutation(session, request) { form =>
+          recipeService.createReference(recipeIdValue, referenceInput(form)).flatMap {
+            case Right(_) =>
+              SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+            case Left(error) => formFailure(error)
+          }
+        }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "references" / rawReferenceId =>
+      (recipeId(rawRecipeId), ReferenceId.parse(rawReferenceId).toOption)
+        .mapN((_, _))
+        .fold(notFoundPage) { case (recipeIdValue, referenceIdValue) =>
+          browserMutation(session, request) { form =>
+            recipeService
+              .updateReference(recipeIdValue, referenceIdValue, referenceUpdateInput(form))
+              .flatMap {
+                case Right(_) =>
+                  SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+                case Left(error) => formFailure(error)
+              }
+          }
+        }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "references" / rawReferenceId / "delete" =>
+      (recipeId(rawRecipeId), ReferenceId.parse(rawReferenceId).toOption)
+        .mapN((_, _))
+        .fold(notFoundPage) { case (recipeIdValue, referenceIdValue) =>
+          browserMutation(session, request) { _ =>
+            recipeService.deleteReference(recipeIdValue, referenceIdValue).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+              case Left(error) => formFailure(error)
+            }
+          }
+        }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "references" / rawReferenceId / "scrape" =>
+      (recipeId(rawRecipeId), ReferenceId.parse(rawReferenceId).toOption)
+        .mapN((_, _))
+        .fold(notFoundPage) { case (recipeIdValue, referenceIdValue) =>
+          browserMutation(session, request) { _ =>
+            recipeService.retryReference(recipeIdValue, referenceIdValue).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+              case Left(error) => formFailure(error)
+            }
+          }
+        }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "meals" / rawMealId / "delete" =>
+      (recipeId(rawRecipeId), mealId(rawMealId)).mapN((_, _)).fold(notFoundPage) {
+        case (recipeIdValue, mealIdValue) =>
+          browserMutation(session, request) { _ =>
+            recipeService.deleteMeal(recipeIdValue, mealIdValue).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+              case Left(error) => formFailure(error)
+            }
+          }
+      }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "meals" / rawMealId / "photos" / rawPhotoId =>
+      (recipeId(rawRecipeId), mealId(rawMealId), PhotoId.parse(rawPhotoId).toOption)
+        .mapN((_, _, _))
+        .fold(notFoundPage) { case (recipeIdValue, mealIdValue, photoIdValue) =>
+          browserMutation(session, request) { form =>
+            photoService
+              .updateComment(
+                recipeIdValue,
+                mealIdValue,
+                photoIdValue,
+                UpdatePhotoInput(Some(formValue(form, "comment")))
+              )
+              .flatMap {
+                case Right(_) =>
+                  SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+                case Left(error) => formFailure(error)
+              }
+          }
+        }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "meals" / rawMealId / "photos" / rawPhotoId / "delete" =>
+      (recipeId(rawRecipeId), mealId(rawMealId), PhotoId.parse(rawPhotoId).toOption)
+        .mapN((_, _, _))
+        .fold(notFoundPage) { case (recipeIdValue, mealIdValue, photoIdValue) =>
+          browserMutation(session, request) { _ =>
+            photoService.deletePhoto(recipeIdValue, mealIdValue, photoIdValue).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+              case Left(error) => formFailure(error)
+            }
+          }
+        }
+    case request @ POST -> Root / "recipes" / rawRecipeId / "primary-photo" / rawPhotoId =>
+      (recipeId(rawRecipeId), PhotoId.parse(rawPhotoId).toOption).mapN((_, _)).fold(notFoundPage) {
+        case (recipeIdValue, photoIdValue) =>
+          browserMutation(session, request) { _ =>
+            recipeService.selectPrimaryPhoto(recipeIdValue, photoIdValue).flatMap {
+              case Right(_) =>
+                SeeOther(Location(Uri.unsafeFromString(s"/recipes/${id(recipeIdValue)}")))
+              case Left(error) => formFailure(error)
+            }
+          }
+      }
     case request @ GET -> Root =>
       val query = request.uri.query.params.get("q").getOrElse("")
       renderHome(query, browserSort(request.uri.query.params.get("sort")), session)
@@ -168,16 +343,27 @@ final class AppHttp(
         .flatten
     case request @ GET -> Root / "recipes" / "new" =>
       Ok(
-        recipeForm(None, request.uri.query.params.get("title").getOrElse(""), "", ""),
+        recipeForm(
+          None,
+          request.uri.query.params.get("title").getOrElse(""),
+          "",
+          "",
+          Nil,
+          session.csrfSecret.getOrElse("")
+        ),
         `Content-Type`(MediaType.text.html)
       )
     case GET -> Root / "recipes" / rawRecipeId / "edit" =>
-      recipeId(rawRecipeId).fold(notFoundPage)(id => recipeEditPage(id))
+      recipeId(rawRecipeId).fold(notFoundPage)(id => recipeEditPage(id, session))
     case GET -> Root / "recipes" / rawRecipeId / "meals" / "new" =>
       recipeId(rawRecipeId).fold(notFoundPage)(id =>
         recipeService.getRecipe(id).flatMap {
-          case Right(recipe) => Ok(mealForm(recipe, None), `Content-Type`(MediaType.text.html))
-          case Left(_)       => notFoundPage
+          case Right(recipe) =>
+            Ok(
+              mealForm(recipe, None, session.csrfSecret.getOrElse("")),
+              `Content-Type`(MediaType.text.html)
+            )
+          case Left(_) => notFoundPage
         }
       )
     case GET -> Root / "recipes" / rawRecipeId / "meals" / rawMealId / "edit" =>
@@ -188,13 +374,189 @@ final class AppHttp(
             recipeService.getMeal(recipeIdValue, mealIdValue)
           ).mapN {
             case (Right(recipe), Right(meal)) =>
-              Ok(mealForm(recipe, Some(meal)), `Content-Type`(MediaType.text.html))
+              Ok(
+                mealForm(recipe, Some(meal), session.csrfSecret.getOrElse("")),
+                `Content-Type`(MediaType.text.html)
+              )
             case _ => notFoundPage
           }.flatten
       }
     case GET -> Root / "recipes" / rawRecipeId =>
-      recipeId(rawRecipeId).fold(notFoundPage)(recipeDetailPage)
+      recipeId(rawRecipeId).fold(notFoundPage)(
+        recipeDetailPage(_, session.csrfSecret.getOrElse(""))
+      )
   }
+
+  private def staticAsset(
+      resource: String,
+      mediaType: MediaType
+  ): IO[Response[IO]] =
+    IO.blocking(Option(getClass.getClassLoader.getResourceAsStream(resource))).flatMap {
+      case None         => NotFound()
+      case Some(stream) =>
+        IO.blocking {
+          try {
+            stream.readAllBytes()
+          } finally {
+            stream.close()
+          }
+        }.flatMap(bytes => Ok(bytes, `Content-Type`(mediaType)))
+    }
+
+  private def browserMutation(
+      session: AuthenticatedSession,
+      request: Request[IO]
+  )(use: UrlForm => IO[Response[IO]]): IO[Response[IO]] =
+    request.as[UrlForm].flatMap { form =>
+      form.values
+        .get("csrf_token")
+        .flatMap(_.headOption)
+        .traverse(sessionManager.validateCsrf(session, _))
+        .flatMap {
+          case Some(true) => use(form)
+          case _          =>
+            Forbidden(
+              p(cls := "form-error", role := "alert", "Invalid CSRF token.").render,
+              `Content-Type`(MediaType.text.html)
+            )
+        }
+    }
+
+  private def createRecipeInput(form: UrlForm): CreateRecipeInput =
+    CreateRecipeInput(
+      formValue(form, "title"),
+      Some(formValue(form, "description")),
+      Some(formValue(form, "keywords"))
+    )
+
+  private def updateRecipeInput(form: UrlForm): UpdateRecipeInput =
+    UpdateRecipeInput(
+      Some(formValue(form, "title")),
+      Some(formValue(form, "description")),
+      Some(formValue(form, "keywords"))
+    )
+
+  private def mealInput(form: UrlForm): Either[ApiError, CreateMealInput] =
+    parseInstant(formValue(form, "cookedAt")).map(value =>
+      CreateMealInput(Some(formValue(form, "notes")), value)
+    )
+
+  private def mealUpdateInput(form: UrlForm): Either[ApiError, UpdateMealInput] =
+    parseInstant(formValue(form, "cookedAt")).map(value =>
+      UpdateMealInput(Some(formValue(form, "notes")), Some(value))
+    )
+
+  private def parseInstant(value: String): Either[ApiError, Instant] =
+    scala.util
+      .Try(Instant.parse(value))
+      .toEither
+      .leftMap(_ => ApiError.Validation(Map("cookedAt" -> List("must be a date and time"))))
+
+  private def referenceInput(form: UrlForm): CreateReferenceInput = {
+    val kind = formValue(form, "kind")
+    CreateReferenceInput(
+      kind,
+      Option(formValue(form, "url")).filter(_.nonEmpty),
+      Option(formValue(form, "citation")).filter(_.nonEmpty),
+      Option(formValue(form, "displayName")).filter(_.nonEmpty)
+    )
+  }
+
+  private def referenceUpdateInput(form: UrlForm): UpdateReferenceInput =
+    UpdateReferenceInput(
+      Option(formValue(form, "url")).filter(_.nonEmpty),
+      Option(formValue(form, "citation")).filter(_.nonEmpty),
+      Option(formValue(form, "displayName")).filter(_.nonEmpty)
+    )
+
+  private def createFormReferences(
+      recipeIdValue: RecipeId,
+      form: UrlForm
+  ): IO[Either[ApiError, Unit]] =
+    formValues(form, "source_kind").zipWithIndex.foldLeftM[IO, Either[ApiError, Unit]](Right(())) {
+      case (left @ Left(_), _)       => IO.pure(left)
+      case (Right(_), (kind, index)) =>
+        val urlValue = formValues(form, "source_url").lift(index).filter(_.nonEmpty)
+        val citationValue = formValues(form, "source_citation").lift(index).filter(_.nonEmpty)
+        if (urlValue.isEmpty && citationValue.isEmpty) IO.pure(Right(()))
+        else
+          recipeService
+            .createReference(
+              recipeIdValue,
+              CreateReferenceInput(kind, urlValue, citationValue, None)
+            )
+            .map(_.map(_ => ()))
+    }
+
+  private def replaceFormReferences(
+      recipeIdValue: RecipeId,
+      form: UrlForm
+  ): IO[Either[ApiError, Unit]] = {
+    import DoobieRepositories.*
+    references
+      .listByRecipe(recipeIdValue)
+      .transact(transactor)
+      .flatMap(
+        _.traverse_(reference => recipeService.deleteReference(recipeIdValue, reference.id).void)
+      ) *> createFormReferences(recipeIdValue, form)
+  }
+
+  private def formValue(form: UrlForm, name: String): String =
+    form.values.get(name).flatMap(_.headOption).getOrElse("")
+  private def formValues(form: UrlForm, name: String): List[String] =
+    form.values.get(name).fold(List.empty[String])(_.toList)
+
+  private def formFailure(error: ApiError): IO[Response[IO]] =
+    BadRequest(
+      p(cls := "form-error", role := "alert", formError(error)).render,
+      `Content-Type`(MediaType.text.html)
+    )
+  private def formError(error: ApiError): String = error match {
+    case ApiError.Validation(fields)             => fields.values.flatten.mkString("; ")
+    case ApiError.Conflict(message)              => message
+    case ApiError.NotFound(resource)             => s"$resource was not found"
+    case ApiError.InvalidRelationship(message)   => message
+    case ApiError.UnsupportedMedia(message)      => message
+    case ApiError.PayloadTooLarge(message)       => message
+    case ApiError.UnavailableDependency(message) => message
+  }
+
+  private def sourceRow(reference: RecipeReference): Frag =
+    div(
+      cls := "source-row",
+      select(
+        name := "source_kind",
+        option(value := "url", selected := (reference.kind == ReferenceKind.Url), "Recipe URL"),
+        option(value := "book", selected := (reference.kind == ReferenceKind.Book), "Book citation")
+      ),
+      input(
+        name := "source_url",
+        tpe := "url",
+        value := reference.url.getOrElse(""),
+        placeholder := "https://example.com/recipe"
+      ),
+      input(
+        name := "source_citation",
+        value := reference.citation.getOrElse(""),
+        placeholder := "Book title, author, page"
+      ),
+      button(cls := "remove-source", tpe := "button", "Remove source")
+    )
+
+  private def confirmationForm(
+      actionUrl: String,
+      csrfToken: String,
+      message: String,
+      labelText: String
+  ): Frag =
+    form(
+      method := "post",
+      action := actionUrl,
+      cls := "confirmation-form",
+      attr("data-confirm") := message,
+      input(tpe := "hidden", name := "csrf_token", value := csrfToken),
+      button(cls := "danger", tpe := "submit", labelText)
+    )
 
   private def renderHome(
       query: String,
@@ -223,16 +585,27 @@ final class AppHttp(
               label(`for` := "recipe-search", "Search recipes"),
               input(
                 htmlId := "recipe-search",
+                name := "q",
                 tpe := "search",
                 value := query,
                 placeholder := "grilled chicken, weeknight, sous vide",
                 autocomplete := "off",
+                attr("hx-get") := "/recipes/search",
+                attr("hx-trigger") := "input changed delay:250ms",
+                attr("hx-target") := "#recipe-results",
+                attr("hx-swap") := "innerHTML",
+                attr("hx-include") := "#recipe-sort",
                 autofocus
               ),
               label(`for` := "recipe-sort", "Order recipes by"),
               select(
                 htmlId := "recipe-sort",
                 name := "sort",
+                attr("hx-get") := "/recipes/search",
+                attr("hx-trigger") := "change",
+                attr("hx-target") := "#recipe-results",
+                attr("hx-swap") := "innerHTML",
+                attr("hx-include") := "#recipe-search",
                 option(
                   value := RecipeSort.Recent.value,
                   selected := (sort == RecipeSort.Recent),
@@ -265,20 +638,28 @@ final class AppHttp(
           )
       }
 
-  private def recipeEditPage(id: RecipeId): IO[Response[IO]] =
-    (recipeService.getRecipe(id), recipeKeywords(id)).mapN {
-      case (Right(recipe), keywords) =>
+  private def recipeEditPage(id: RecipeId, session: AuthenticatedSession): IO[Response[IO]] =
+    (recipeService.getRecipe(id), recipeKeywords(id), recipeReferences(id)).mapN {
+      case (Right(recipe), keywords, references) =>
         Ok(
-          recipeForm(Some(recipe), recipe.title, recipe.description, keywords.mkString(", ")),
+          recipeForm(
+            Some(recipe),
+            recipe.title,
+            recipe.description,
+            keywords.mkString(", "),
+            references,
+            session.csrfSecret.getOrElse("")
+          ),
           `Content-Type`(MediaType.text.html)
         )
       case _ => notFoundPage
     }.flatten
 
-  private def recipeDetailPage(id: RecipeId): IO[Response[IO]] = recipeDetail(id).flatMap {
-    case None         => notFoundPage
-    case Some(detail) => Ok(detailPage(detail), `Content-Type`(MediaType.text.html))
-  }
+  private def recipeDetailPage(id: RecipeId, csrfToken: String): IO[Response[IO]] =
+    recipeDetail(id).flatMap {
+      case None         => notFoundPage
+      case Some(detail) => Ok(detailPage(detail, csrfToken), `Content-Type`(MediaType.text.html))
+    }
 
   private def recipeDetail(id: RecipeId): IO[Option[BrowserRecipe]] = {
     import DoobieRepositories.*
@@ -308,6 +689,8 @@ final class AppHttp(
 
   private def recipeKeywords(id: RecipeId): IO[List[String]] =
     DoobieRepositories.keywords.listByRecipe(id).map(_.map(_.keyword)).transact(transactor)
+  private def recipeReferences(id: RecipeId): IO[List[RecipeReference]] =
+    DoobieRepositories.references.listByRecipe(id).transact(transactor)
 
   private def recipeCards(recipes: List[Recipe], query: String): Frag =
     if (recipes.isEmpty) {
@@ -345,12 +728,13 @@ final class AppHttp(
       recipe: Option[Recipe],
       titleValue: String,
       descriptionValue: String,
-      keywords: String
+      keywords: String,
+      sources: List[RecipeReference],
+      csrfToken: String
   ): String = {
     val editing = recipe.nonEmpty
     val heading = if (editing) "Edit recipe" else "New recipe"
-    val action = recipe.fold("/api/v1/recipes")(value => s"/api/v1/recipes/${id(value.id)}")
-    val method = if (editing) "PATCH" else "POST"
+    val actionUrl = recipe.fold("/recipes")(value => s"/recipes/${id(value.id)}")
     val back = recipe.fold("/")(value => s"/recipes/${id(value.id)}")
     page(
       heading,
@@ -359,17 +743,17 @@ final class AppHttp(
         a(href := back, "← Back"),
         h1(heading),
         form(
-          cls := "api-form",
-          attr("data-api") := action,
-          attr("data-method") := method,
-          attr("data-redirect") := back,
-          attr("data-source-entry") := "true",
+          method := "post",
+          action := actionUrl,
+          attr("data-recipe-form") := "true",
+          input(tpe := "hidden", name := "csrf_token", value := csrfToken),
           label(`for` := "title", "Title"),
           input(
             htmlId := "title",
             name := "title",
             required,
             maxlength := 200,
+            aria.describedby := "form-errors",
             value := titleValue
           ),
           label(`for` := "description", "Description"),
@@ -377,12 +761,14 @@ final class AppHttp(
             htmlId := "description",
             name := "description",
             maxlength := 10000,
+            aria.describedby := "form-errors",
             descriptionValue
           ),
           label(`for` := "keywords", "Keywords"),
           input(
             htmlId := "keywords",
             name := "keywords",
+            aria.describedby := "form-errors",
             value := keywords,
             placeholder := "sous vide, chicken, bbq"
           ),
@@ -392,9 +778,10 @@ final class AppHttp(
             aria.live := "polite",
             htmlH2("Sources"),
             p(cls := "hint", "Add one or more recipe URLs or book citations."),
+            sources.map(sourceRow),
             button(htmlId := "add-recipe-source", tpe := "button", "Add source")
           ),
-          p(cls := "form-error", aria.live := "polite", role := "alert"),
+          p(htmlId := "form-errors", cls := "form-error", aria.live := "polite", role := "alert"),
           button(
             cls := "primary",
             tpe := "submit",
@@ -405,9 +792,9 @@ final class AppHttp(
     )
   }
 
-  private def mealForm(recipe: Recipe, meal: Option[Meal]): String = {
-    val existing = meal.map(value => s"/api/v1/recipes/${id(recipe.id)}/meals/${id(value.id)}")
-    val target = existing.getOrElse(s"/api/v1/recipes/${id(recipe.id)}/meals")
+  private def mealForm(recipe: Recipe, meal: Option[Meal], csrfToken: String): String = {
+    val existing = meal.map(value => s"/recipes/${id(recipe.id)}/meals/${id(value.id)}")
+    val targetUrl = existing.getOrElse(s"/recipes/${id(recipe.id)}/meals")
     val cookedAt = meal.fold(Instant.now())(_.cookedAt)
     page(
       if (meal.nonEmpty) "Edit meal" else "Cooked it",
@@ -417,16 +804,19 @@ final class AppHttp(
         h1(if (meal.nonEmpty) "Edit cooking entry" else "Record a cooking entry"),
         form(
           htmlId := "meal-form",
-          attr("data-api") := target,
-          attr("data-method") := (if (meal.nonEmpty) "PATCH" else "POST"),
+          method := "post",
+          action := targetUrl,
+          attr("data-meal-form") := "true",
           attr("data-recipe-id") := id(recipe.id),
           attr("data-meal-id") := meal.map(value => id(value.id)).getOrElse(""),
+          input(tpe := "hidden", name := "csrf_token", value := csrfToken),
           label(`for` := "cooked-at", "When did you cook it?"),
           input(
             htmlId := "cooked-at",
             name := "cookedAt",
             tpe := "datetime-local",
             required,
+            aria.describedby := "form-errors",
             value := localDateTime(cookedAt)
           ),
           label(`for` := "notes", "Notes"),
@@ -434,6 +824,7 @@ final class AppHttp(
             htmlId := "notes",
             name := "notes",
             maxlength := 10000,
+            aria.describedby := "form-errors",
             placeholder := "What worked? What would you change?",
             meal.map(_.notes).getOrElse("")
           ),
@@ -443,11 +834,12 @@ final class AppHttp(
             name := "photo",
             tpe := "file",
             accept := "image/jpeg,image/png,image/webp",
+            aria.describedby := "form-errors upload-progress",
             multiple
           ),
           div(htmlId := "photo-previews", cls := "photo-previews", aria.live := "polite"),
           p(cls := "hint", "JPEG, PNG, or WebP, up to 10 MB each."),
-          p(cls := "form-error", aria.live := "polite"),
+          p(htmlId := "form-errors", cls := "form-error", aria.live := "polite"),
           p(htmlId := "upload-progress", cls := "muted", aria.live := "polite"),
           button(cls := "primary", tpe := "submit", "Save cooking entry")
         )
@@ -455,7 +847,7 @@ final class AppHttp(
     )
   }
 
-  private def detailPage(detail: BrowserRecipe): String = {
+  private def detailPage(detail: BrowserRecipe, csrfToken: String): String = {
     val recipe = detail.recipe
     val primary = img(
       cls := "hero-photo",
@@ -467,10 +859,10 @@ final class AppHttp(
       else ul(cls := "chips", detail.keywords.map(value => li(value)))
     val references =
       if (detail.references.isEmpty) p(cls := "muted", "No sources yet.")
-      else frag(detail.references.map(referenceView(_, recipe.id)))
+      else frag(detail.references.map(referenceView(_, recipe.id, csrfToken)))
     val meals =
       if (detail.meals.isEmpty) div(cls := "empty-state", p("No cooking entries yet."))
-      else frag(detail.meals.map(mealView(_, detail.photos)))
+      else frag(detail.meals.map(mealView(_, detail.photos, csrfToken)))
     page(
       recipe.title,
       main(
@@ -486,14 +878,10 @@ final class AppHttp(
               href := s"/recipes/${id(recipe.id)}/meals/new",
               "Record meal"
             ),
-            button(
-              cls := "button danger mutation-button",
-              attr("data-api") := s"/api/v1/recipes/${id(recipe.id)}",
-              attr("data-method") := "DELETE",
-              attr(
-                "data-confirm"
-              ) := "Permanently delete this recipe and all of its cooking history?",
-              tpe := "button",
+            confirmationForm(
+              s"/recipes/${id(recipe.id)}/delete",
+              csrfToken,
+              "Permanently delete this recipe and all of its cooking history?",
               "Delete recipe"
             )
           )
@@ -503,8 +891,10 @@ final class AppHttp(
           htmlH2("Sources and imports"),
           div(htmlId := "references", references),
           form(
-            cls := "enhanced-reference-form",
-            attr("data-recipe-id") := id(recipe.id),
+            method := "post",
+            action := s"/recipes/${id(recipe.id)}/references",
+            cls := "reference-form",
+            input(tpe := "hidden", name := "csrf_token", value := csrfToken),
             label(`for` := "reference-kind", "Add a source"),
             select(
               htmlId := "reference-kind",
@@ -540,7 +930,11 @@ final class AppHttp(
     )
   }
 
-  private def referenceView(value: BrowserReference, recipeId: RecipeId): Frag = {
+  private def referenceView(
+      value: BrowserReference,
+      recipeId: RecipeId,
+      csrfToken: String
+  ): Frag = {
     val reference = value.reference
     val displayLabel =
       reference.displayName.orElse(reference.url).orElse(reference.citation).getOrElse("Reference")
@@ -566,7 +960,10 @@ final class AppHttp(
           content
         )
     }
-    val endpoint = s"/api/v1/recipes/${id(recipeId)}/references/${id(reference.id)}"
+    val endpoint = s"/recipes/${id(recipeId)}/references/${id(reference.id)}"
+    val retry = Option.when(reference.kind == ReferenceKind.Url)(
+      confirmationForm(s"$endpoint/scrape", csrfToken, "Retry this import now?", "Retry import")
+    )
     val field = reference.kind match {
       case ReferenceKind.Url =>
         input(
@@ -584,23 +981,14 @@ final class AppHttp(
           required
         )
     }
-    val retry = Option.when(reference.kind == ReferenceKind.Url)(
-      button(
-        cls := "mutation-button",
-        attr("data-api") := s"$endpoint/scrape",
-        attr("data-method") := "POST",
-        tpe := "button",
-        "Retry import"
-      )
-    )
     article(
       cls := "reference",
       h3(displayLabel),
       importInfo,
       form(
-        cls := "api-form",
-        attr("data-api") := endpoint,
-        attr("data-method") := "PATCH",
+        method := "post",
+        action := endpoint,
+        input(tpe := "hidden", name := "csrf_token", scalatags.Text.attrs.value := csrfToken),
         label(
           `for` := s"reference-${id(reference.id)}",
           if (reference.kind == ReferenceKind.Url) "Recipe URL" else "Book citation"
@@ -610,18 +998,16 @@ final class AppHttp(
         button(tpe := "submit", "Save source")
       ),
       retry,
-      button(
-        cls := "danger mutation-button",
-        attr("data-api") := endpoint,
-        attr("data-method") := "DELETE",
-        attr("data-confirm") := "Permanently delete this source?",
-        tpe := "button",
+      confirmationForm(
+        s"$endpoint/delete",
+        csrfToken,
+        "Permanently delete this source?",
         "Delete source"
       )
     )
   }
 
-  private def mealView(meal: Meal, photos: List[Photo]): Frag = {
+  private def mealView(meal: Meal, photos: List[Photo], csrfToken: String): Frag = {
     val mealPhotos = photos
       .filter(_.mealId == meal.id)
       .map { photo =>
@@ -632,11 +1018,9 @@ final class AppHttp(
           ),
           figcaption(
             form(
-              cls := "api-form photo-caption-form",
-              attr(
-                "data-api"
-              ) := s"/api/v1/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
-              attr("data-method") := "PATCH",
+              method := "post",
+              action := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
+              input(tpe := "hidden", name := "csrf_token", value := csrfToken),
               label(`for` := s"caption-${id(photo.id)}", "Caption"),
               input(
                 htmlId := s"caption-${id(photo.id)}",
@@ -650,23 +1034,16 @@ final class AppHttp(
           ),
           div(
             cls := "photo-actions",
-            button(
-              cls := "mutation-button",
-              attr(
-                "data-api"
-              ) := s"/api/v1/recipes/${id(meal.recipeId)}/primary-photo/${id(photo.id)}",
-              attr("data-method") := "PUT",
-              tpe := "button",
+            confirmationForm(
+              s"/recipes/${id(meal.recipeId)}/primary-photo/${id(photo.id)}",
+              csrfToken,
+              "Use this photo as the recipe's primary photo?",
               "Use as primary"
             ),
-            button(
-              cls := "danger mutation-button",
-              attr(
-                "data-api"
-              ) := s"/api/v1/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
-              attr("data-method") := "DELETE",
-              attr("data-confirm") := "Permanently delete this photo?",
-              tpe := "button",
+            confirmationForm(
+              s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
+              csrfToken,
+              "Permanently delete this photo?",
               "Delete photo"
             )
           )
@@ -678,12 +1055,10 @@ final class AppHttp(
         h3(date(meal.cookedAt)),
         div(
           a(href := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/edit", "Edit"),
-          button(
-            cls := "danger mutation-button",
-            attr("data-api") := s"/api/v1/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}",
-            attr("data-method") := "DELETE",
-            attr("data-confirm") := "Permanently delete this cooking entry and its photos?",
-            tpe := "button",
+          confirmationForm(
+            s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
+            csrfToken,
+            "Permanently delete this cooking entry and its photos?",
             "Delete meal"
           )
         )
@@ -761,7 +1136,10 @@ final class AppHttp(
       body(
         content,
         Option.when(includeScript)(
-          raw(browserScript + browserEnhancements + browserSortScript + recipeSourceScript)
+          frag(
+            script(src := "/static/htmx-2.0.4.min.js", defer),
+            script(src := "/static/app-v1.js", defer)
+          )
         )
       )
     ).render
@@ -833,15 +1211,19 @@ final class AppHttp(
 
   private val styles =
     """:root{font-family:system-ui,sans-serif;color:#20231f;background:#fbfaf6;line-height:1.45}*{box-sizing:border-box}body{margin:0}main,header{max-width:1100px;margin:auto;padding:1rem}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dedbd1}.brand{font-weight:800;color:inherit;text-decoration:none}h1{line-height:1.1}a{color:#295c43}.button,button{border:1px solid #295c43;border-radius:.5rem;background:#fff;color:#173c2b;padding:.65rem .85rem;font:inherit;text-decoration:none;cursor:pointer}.primary{background:#295c43;color:#fff}.link-button{border:0;padding:0;background:none}.page-heading,.detail-heading{display:flex;justify-content:space-between;gap:1rem;align-items:start}.page-heading .primary{font-size:1.5rem;line-height:1}.recipe-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-top:1rem}.recipe-card,.meal,.reference,.empty-state{border:1px solid #dedbd1;border-radius:.75rem;background:#fff;overflow:hidden;padding:1rem}.recipe-card{padding:0}.recipe-card img{width:100%;height:150px;object-fit:cover;background:#e9e7df}.recipe-card div{padding:0 1rem 1rem}.recipe-card h2{margin-bottom:.25rem}.recipe-card p{margin:.4rem 0}.muted,.hint{color:#62685f}.error,.form-error{color:#a72626}.form-page{max-width:680px}form{display:grid;gap:.65rem}input,textarea{width:100%;font:inherit;padding:.7rem;border:1px solid #989b92;border-radius:.4rem}textarea{min-height:8rem}.inline-form{display:flex;gap:.5rem}.inline-form input{flex:1}.actions{display:flex;flex-wrap:wrap;gap:.5rem}.hero-photo{width:100%;max-height:480px;object-fit:cover;background:#e9e7df;border-radius:.75rem}.chips{display:flex;gap:.4rem;flex-wrap:wrap;padding:0;list-style:none}.chips li,.status{background:#e7f1e8;border-radius:999px;padding:.2rem .55rem;font-size:.9rem}.meal{margin:.8rem 0}.meal>div:first-child{display:flex;justify-content:space-between;align-items:center}.meal-photos,.photo-previews{display:flex;gap:.5rem;flex-wrap:wrap}.meal-photos figure{margin:0;width:110px}.meal-photos img,.photo-previews img{width:110px;height:90px;object-fit:cover;border-radius:.4rem}.meal-photos figcaption{font-size:.8rem}.reference{margin:.5rem 0}.login{max-width:420px;margin-top:8vh}@media(max-width:600px){main,header{padding:.8rem}.detail-heading,.page-heading{flex-direction:column}.actions{width:100%}.actions .button{flex:1;text-align:center}.inline-form{flex-direction:column}.recipe-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}"""
+  @scala.annotation.nowarn("msg=unused private member")
   private val browserScript =
     """<script>(()=>{const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const error=(f,m)=>{const e=f.querySelector('.form-error');if(e){e.textContent=m||'Please correct the highlighted fields.';e.tabIndex=-1;e.focus()}};const json=(f)=>Object.fromEntries(new FormData(f).entries());const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};document.querySelectorAll('.api-form[data-redirect]').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(f.dataset.api,f.dataset.method,json(f));location.href=f.dataset.redirect}catch(x){error(f,x.message)}}));const search=document.querySelector('#recipe-search');if(search){let timer;const link=document.querySelector('#new-recipe'),results=document.querySelector('#recipe-results'),status=document.querySelector('#search-status');const run=()=>{const q=search.value;link.href='/recipes/new?title='+encodeURIComponent(q);clearTimeout(timer);timer=setTimeout(async()=>{status.textContent='Searching…';try{results.innerHTML=await (await fetch('/recipes/search?q='+encodeURIComponent(q))).text();status.textContent=''}catch(_){status.textContent='Search failed. Try again.'}},250)};search.addEventListener('input',run);run()}const photos=document.querySelector('#photos');if(photos){photos.addEventListener('change',()=>{const box=document.querySelector('#photo-previews');box.innerHTML='';[...photos.files].forEach(file=>{const img=document.createElement('img');img.alt=file.name;img.src=URL.createObjectURL(file);box.append(img)})})}const meal=document.querySelector('#meal-form');if(meal){meal.addEventListener('submit',async e=>{e.preventDefault();const progress=document.querySelector('#upload-progress');try{const data=json(meal);data.cookedAt=new Date(data.cookedAt).toISOString();let result=await api(meal.dataset.api,meal.dataset.method,data);const mealId=meal.dataset.mealId||result.id;if(photos?.files.length){progress.textContent='Uploading photos…';const fd=new FormData();[...photos.files].forEach(p=>fd.append('photo',p));const r=await fetch(`/api/v1/recipes/${meal.dataset.recipeId}/meals/${mealId}/photos`,{method:'POST',headers:{'X-CSRF-Token':csrf()},body:fd});if(!r.ok)throw Error('Meal saved, but photo upload failed.');}location.href='/recipes/'+meal.dataset.recipeId}catch(x){error(meal,x.message);progress.textContent=''}})}document.querySelectorAll('.reference-form').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(`/api/v1/recipes/${f.dataset.recipeId}/references`,'POST',{kind:'url',url:f.url.value});location.reload()}catch(x){error(f,x.message)}}))})();</script>"""
 
+  @scala.annotation.nowarn("msg=unused private member")
   private val browserEnhancements =
     """<script>(()=>{const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};const report=(f,m)=>{const e=f.querySelector('.form-error');if(e){e.textContent=m;e.tabIndex=-1;e.focus()}};document.querySelectorAll('.api-form:not([data-redirect])').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(f.dataset.api,f.dataset.method,Object.fromEntries(new FormData(f).entries()));location.reload()}catch(x){report(f,x.message)}}));document.querySelectorAll('.mutation-button').forEach(b=>b.addEventListener('click',async()=>{if(b.dataset.confirm&&!confirm(b.dataset.confirm))return;try{await api(b.dataset.api,b.dataset.method);location.href=b.dataset.method==='DELETE'&&b.dataset.api.split('/').length===5?'/':location.href}catch(x){alert(x.message)}}));document.querySelectorAll('.enhanced-reference-form').forEach(f=>{const kind=f.kind,url=f.url,citation=f.citation;const toggle=()=>{const book=kind.value==='book';url.hidden=book;citation.hidden=!book;url.required=!book;citation.required=book};kind.addEventListener('change',toggle);toggle();f.addEventListener('submit',async e=>{e.preventDefault();try{const book=kind.value==='book';await api(`/api/v1/recipes/${f.dataset.recipeId}/references`,'POST',book?{kind:'book',citation:citation.value}:{kind:'url',url:url.value});location.reload()}catch(x){report(f,x.message)}})});if(document.querySelector('[data-import-active]'))setTimeout(()=>location.reload(),3000)})();</script>"""
 
+  @scala.annotation.nowarn("msg=unused private member")
   private val browserSortScript =
     """<script>(()=>{const original=document.querySelector('#recipe-search'),sort=document.querySelector('#recipe-sort');if(!original||!sort)return;const search=original.cloneNode(true);original.replaceWith(search);let timer;const results=document.querySelector('#recipe-results'),status=document.querySelector('#search-status'),link=document.querySelector('#new-recipe');const run=()=>{const q=search.value,order=sort.value,params=new URLSearchParams({q,sort:order});link.href='/recipes/new?title='+encodeURIComponent(q);history.replaceState(null,'','/?'+params);clearTimeout(timer);timer=setTimeout(async()=>{status.textContent='Searching…';try{results.innerHTML=await (await fetch('/recipes/search?'+params)).text();status.textContent=''}catch(_){status.textContent='Search failed. Try again.'}},250)};search.addEventListener('input',run);sort.addEventListener('change',run)})();</script>"""
 
+  @scala.annotation.nowarn("msg=unused private member")
   private val recipeSourceScript =
     """<script>(()=>{const original=document.querySelector('.api-form[data-source-entry]');if(!original)return;const form=original.cloneNode(true);original.replaceWith(form);const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};const report=m=>{const e=form.querySelector('.form-error');e.textContent=m;e.tabIndex=-1;e.focus()};const sources=form.querySelector('#recipe-sources'),add=form.querySelector('#add-recipe-source');const source=()=>{const row=document.createElement('div');row.dataset.source='';row.className='source-row';const kind=document.createElement('select');kind.setAttribute('aria-label','Source type');kind.innerHTML='<option value="url">Recipe URL</option><option value="book">Book citation</option>';const url=document.createElement('input');url.type='url';url.placeholder='https://example.com/recipe';url.required=true;url.setAttribute('aria-label','Recipe URL');const citation=document.createElement('input');citation.placeholder='Book title, author, page';citation.hidden=true;citation.setAttribute('aria-label','Book citation');const remove=document.createElement('button');remove.type='button';remove.textContent='Remove source';remove.addEventListener('click',()=>row.remove());kind.addEventListener('change',()=>{const book=kind.value==='book';url.hidden=book;url.required=!book;citation.hidden=!book;citation.required=book});row.append(kind,url,citation,remove);sources.insertBefore(row,add)};add.addEventListener('click',source);form.addEventListener('submit',async e=>{e.preventDefault();try{const data=Object.fromEntries(new FormData(form).entries());const recipe=await api(form.dataset.api,form.dataset.method,data);for(const row of form.querySelectorAll('[data-source]')){const kind=row.querySelector('select').value,url=row.querySelector('input[type=url]').value,citation=row.querySelector('input:not([type=url])').value;await api(`/api/v1/recipes/${recipe.id}/references`,'POST',kind==='book'?{kind,citation}:{kind,url})}location.href='/recipes/'+recipe.id}catch(x){report(x.message)}})})();</script>"""
 }

@@ -48,6 +48,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         anonymousMedia <- app.run(
           Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000")
         )
+        anonymousStatic <- app.run(Request[IO](GET, uri"/static/app-v1.js"))
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
         anonymousLogout <- app.run(Request[IO](POST, uri"/logout"))
@@ -87,6 +88,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(anonymousHome.status, Status.SeeOther)
         assertEquals(anonymousApi.status, Status.Unauthorized)
         assertEquals(anonymousMedia.status, Status.SeeOther)
+        assertEquals(anonymousStatic.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)
         assertEquals(anonymousLogout.status, Status.SeeOther)
@@ -128,6 +130,25 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
             csrfCookie
           )
         )
+        htmx <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/static/htmx-2.0.4.min.js"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        appScript <- app.run(
+          withCookies(Request[IO](GET, uri"/static/app-v1.js"), sessionCookie, csrfCookie)
+        )
+        invalidRecipe <- app.run(
+          withCookies(
+            Request[IO](POST, uri"/recipes")
+              .withEntity(UrlForm("csrf_token" -> csrfCookie.content, "title" -> "")),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        invalidRecipeBody <- invalidRecipe.as[String]
       } yield {
         assertEquals(home.status, Status.Ok)
         assert(homeBody.contains("id=\"recipe-search\""))
@@ -140,6 +161,10 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assert(newRecipeBody.contains("id=\"keywords\""))
         assert(newRecipeBody.contains("id=\"add-recipe-source\""))
         assertEquals(search.status, Status.Ok)
+        assertEquals(htmx.status, Status.Ok)
+        assertEquals(appScript.status, Status.Ok)
+        assertEquals(invalidRecipe.status, Status.BadRequest)
+        assert(invalidRecipeBody.contains("form-error"))
       }
     }
   }

@@ -42,6 +42,15 @@ Run checks:
 sbt scalafmtCheckAll test
 ```
 
+## Browser enhancements
+
+The browser UI is server-rendered HTML. HTMX is vendored locally and served from
+an authenticated static route; `app-v1.js` is the only application JavaScript
+asset. It is intentionally limited to search/source-row glue, accessibility
+focus handling, confirmation dialogs, photo previews, and multipart upload
+progress. Scala.js remains a deferred option if browser-side state becomes
+substantially more complex.
+
 The checked-in API contract is in
 [`docs/openapi.yaml`](docs/openapi.yaml). API mutations require the CSRF secret
 from the `cooking_blog_csrf` cookie in the `X-CSRF-Token` header.

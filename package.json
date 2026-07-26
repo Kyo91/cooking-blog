@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  },
+  "scripts": {
+    "test:browser": "playwright test"
+  }
+}
