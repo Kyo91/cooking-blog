@@ -7,6 +7,7 @@ import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
 import cookingblog.storage.LocalPhotoStore
+import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import io.circe.Json
 import io.circe.jawn.parse
 import munit.CatsEffectSuite
@@ -422,7 +423,10 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
-      http = AppHttp(credentials, manager, transactor, authConfig, photoStore)
+      cleanup = PhotoCleanup(photoStore)
+      photoService = PhotoService(transactor, photoStore, cleanup)
+      recipeService = RecipeApiService(transactor, cleanup)
+      http = AppHttp(credentials, manager, transactor, authConfig, photoService, recipeService)
     } yield http.app
 
   private def login(app: HttpApp[IO]): IO[Authenticated] =

@@ -6,6 +6,7 @@ import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
 import cookingblog.storage.LocalPhotoStore
+import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import doobie.implicits.*
 import munit.CatsEffectSuite
 import org.http4s.*
@@ -179,7 +180,10 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
-      http = AppHttp(credentials, manager, transactor, authConfig, photoStore)
+      cleanup = PhotoCleanup(photoStore)
+      photoService = PhotoService(transactor, photoStore, cleanup)
+      recipeService = RecipeApiService(transactor, cleanup)
+      http = AppHttp(credentials, manager, transactor, authConfig, photoService, recipeService)
       migrationExists <- Resource.eval(
         sql"""
           select exists (

@@ -8,6 +8,7 @@ import cookingblog.config.AppConfig
 import cookingblog.database.Database
 import cookingblog.http.AppHttp
 import cookingblog.scraping.*
+import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import cookingblog.storage.LocalPhotoStore
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
@@ -35,6 +36,9 @@ object Main extends IOApp.Simple {
         SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom)
       credentialsAuthenticator = DummyCredentialsAuthenticator[IO](config.auth)
       photoStore <- Resource.eval(LocalPhotoStore.create(config.photos.directory))
+      photoCleanup = PhotoCleanup(photoStore)
+      photoService = PhotoService(transactor, photoStore, photoCleanup)
+      recipeService = RecipeApiService(transactor, photoCleanup)
       client <- EmberClientBuilder
         .default[IO]
         .withMaxTotal(config.scraping.workerCount)
@@ -59,7 +63,8 @@ object Main extends IOApp.Simple {
           sessionManager,
           transactor,
           config.auth,
-          photoStore
+          photoService,
+          recipeService
         )
       _ <- Resource.make(
         (IO.sleep(1.minute) *> sessionManager.deleteExpiredOrInvalidated.flatMap(count =>
