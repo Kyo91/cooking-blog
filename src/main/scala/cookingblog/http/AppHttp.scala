@@ -6,8 +6,7 @@ import cookingblog.auth.*
 import cookingblog.config.AuthConfig
 import cookingblog.http.api.ApiRoutes
 import cookingblog.http.pages.BrowserPageRoutes
-import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
-import cookingblog.storage.PhotoStore
+import cookingblog.service.{PhotoService, RecipeApiService}
 import doobie.Transactor
 import org.http4s.*
 import org.http4s.dsl.io.*
@@ -21,13 +20,11 @@ final class AppHttp(
     sessionManager: SessionManager[IO],
     transactor: Transactor[IO],
     authConfig: AuthConfig,
-    photoStore: PhotoStore
+    photoService: PhotoService,
+    recipeService: RecipeApiService
 )(using logger: Logger[IO]) {
   private val sessionCookieName = "cooking_blog_session"
   private val csrfCookieName = "cooking_blog_csrf"
-  private val photoCleanup = PhotoCleanup(photoStore)
-  private val photoService = PhotoService(transactor, photoStore, photoCleanup)
-  private val recipeService = RecipeApiService(transactor, photoCleanup)
   private val apiRoutes = ApiRoutes(recipeService, photoService, sessionManager)
   private val browserPages =
     BrowserPageRoutes(sessionManager, recipeService, photoService, transactor)
