@@ -32,12 +32,14 @@ enum ImageProcessingException(message: String) extends RuntimeException(message)
   case ImageTooLarge extends ImageProcessingException("Decoded photo dimensions are too large")
 }
 
+/** Decodes untrusted uploads and emits normalized, metadata-free immutable image variants. */
 final class ImageProcessor(
     maxUploadBytes: Long = ImageProcessor.MaxUploadBytes
 ) {
   import ImageProcessingException.*
   import ImageProcessor.ImageFormat
 
+  /** Streams to temporary storage with a byte cap before decoding and re-encoding safe variants. */
   def process(source: Stream[IO, Byte]): Resource[IO, ProcessedPhoto] =
     temporaryDirectory.evalMap { directory =>
       val input = directory.resolve("upload")

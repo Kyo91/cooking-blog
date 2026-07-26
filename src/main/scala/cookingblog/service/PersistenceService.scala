@@ -9,6 +9,10 @@ import doobie.implicits.*
 
 import java.time.Instant
 
+/** Lower-level transactional use cases used by persistence and scraper integration tests.
+  *
+  * Production HTTP writes generally enter through [[RecipeApiService]].
+  */
 final class PersistenceService(
     transactor: Transactor[IO],
     recipes: RecipeRepository[ConnectionIO],
@@ -30,6 +34,7 @@ final class PersistenceService(
       recipes.refreshLastMadeAt(meal.recipeId, meal.updatedAt))
       .transact(transactor)
 
+  /** Updates a meal and refreshes every affected recipe when a meal is ever moved. */
   def updateMeal(meal: Meal): IO[Boolean] = {
     val program =
       meals.find(meal.id).flatMap {
@@ -49,6 +54,8 @@ final class PersistenceService(
     program.transact(transactor)
   }
 
+  /** Deletes a meal only after locating its recipe so the cached last-made value can be recomputed.
+    */
   def deleteMeal(id: MealId, updatedAt: Instant): IO[Boolean] = {
     val program =
       meals.find(id).flatMap {
@@ -69,6 +76,7 @@ final class PersistenceService(
   ): IO[Unit] =
     (references.create(reference) *> scrapeJobs.create(job)).transact(transactor)
 
+  /** Upserts imported text and its search document together, preventing stale search content. */
   def saveScrapedDocumentAndSearch(
       document: ScrapedDocument,
       searchDocument: RecipeSearchDocument

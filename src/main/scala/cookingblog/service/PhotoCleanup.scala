@@ -5,6 +5,7 @@ import cats.syntax.all.*
 import cookingblog.storage.PhotoStore
 import org.typelevel.log4cats.Logger
 
+/** Performs idempotent best-effort removal of physical photo objects after metadata deletion. */
 trait PhotoCleanup[F[_]] {
   def deleteBestEffort(storageKeys: List[String]): F[Unit]
 }

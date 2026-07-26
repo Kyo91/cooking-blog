@@ -8,11 +8,15 @@ import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
 import scala.concurrent.duration.FiniteDuration
 
+/** Issues, validates, and invalidates opaque browser sessions without persisting their raw secrets.
+  */
 final class SessionManager[F[_]: Clock: Sync](
     store: SessionStore[F],
     sessionLifetime: FiniteDuration,
     secureRandom: SecureRandom
 ) {
+
+  /** Generates independent session and CSRF secrets, retaining only their hashes in the store. */
   def create(principal: Principal): F[IssuedSession] =
     for {
       now <- Clock[F].realTimeInstant

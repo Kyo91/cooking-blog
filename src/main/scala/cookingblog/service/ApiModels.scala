@@ -4,6 +4,7 @@ import cookingblog.domain.*
 
 import java.time.Instant
 
+/** Expected application failures that map consistently to JSON and HTML HTTP responses. */
 sealed trait ApiError extends Product with Serializable
 
 object ApiError {
@@ -34,10 +35,15 @@ final case class ReferenceScrapeStatus(
     document: Option[ScrapedDocument]
 )
 
-final case class CreateRecipeInput(title: String, description: Option[String])
+final case class CreateRecipeInput(
+    title: String,
+    description: Option[String],
+    keywords: Option[String]
+)
 final case class UpdateRecipeInput(
     title: Option[String],
-    description: Option[String]
+    description: Option[String],
+    keywords: Option[String]
 )
 final case class CreateMealInput(notes: Option[String], cookedAt: Instant)
 final case class UpdateMealInput(

@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import scala.concurrent.duration.FiniteDuration
 
+/** Enforces the network, redirect, content-type, byte, and request-time limits for scraper HTTP. */
 final class SecurePageFetcher(
     client: Client[IO],
     config: ScrapeConfig,
@@ -21,6 +22,9 @@ final class SecurePageFetcher(
   def fetch(uri: Uri): IO[FetchedPage] =
     fetchRedirect(uri, uri, config.maximumRedirects)
 
+  /** Validates every redirect destination before issuing the next request, preventing SSRF
+    * bypasses.
+    */
   private def fetchRedirect(
       requestedUri: Uri,
       uri: Uri,
@@ -146,7 +150,11 @@ final class SecurePageFetcher(
     )
 }
 
+/** Orchestrates secure fetching and extraction, preferring a useful safe print page when available.
+  */
 final class HttpPageScraper(fetcher: SecurePageFetcher) extends PageScraper {
+
+  /** Produces a hash-stable, sanitized document suitable for storage and search. */
   override def scrape(url: String): IO[ScrapedPage] =
     IO.fromEither(
       Uri

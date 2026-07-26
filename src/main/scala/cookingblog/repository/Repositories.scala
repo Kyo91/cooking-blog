@@ -9,6 +9,7 @@ import doobie.postgres.implicits.*
 import java.time.Instant
 import java.util.UUID
 
+/** Table-oriented persistence boundary for recipe rows and their cached last-made timestamp. */
 trait RecipeRepository[F[_]] {
   def create(recipe: Recipe): F[Unit]
   def find(id: RecipeId): F[Option[Recipe]]
@@ -18,6 +19,7 @@ trait RecipeRepository[F[_]] {
   def refreshLastMadeAt(id: RecipeId, updatedAt: Instant): F[Boolean]
 }
 
+/** Table-oriented persistence boundary for cooking events. */
 trait MealRepository[F[_]] {
   def create(meal: Meal): F[Unit]
   def find(id: MealId): F[Option[Meal]]
@@ -26,6 +28,7 @@ trait MealRepository[F[_]] {
   def listByRecipe(recipeId: RecipeId): F[List[Meal]]
 }
 
+/** Table-oriented persistence boundary for photo metadata, not photo bytes. */
 trait PhotoRepository[F[_]] {
   def create(photo: Photo): F[Unit]
   def find(id: PhotoId): F[Option[Photo]]
@@ -37,6 +40,7 @@ trait PhotoRepository[F[_]] {
   def findPrimaryForRecipe(recipeId: RecipeId): F[Option[Photo]]
 }
 
+/** Table-oriented persistence boundary for recipe URL and book references. */
 trait RecipeReferenceRepository[F[_]] {
   def create(reference: RecipeReference): F[Unit]
   def find(id: ReferenceId): F[Option[RecipeReference]]
@@ -45,6 +49,7 @@ trait RecipeReferenceRepository[F[_]] {
   def listByRecipe(recipeId: RecipeId): F[List[RecipeReference]]
 }
 
+/** Table-oriented persistence boundary for extracted, sanitized import content. */
 trait ScrapedDocumentRepository[F[_]] {
   def create(document: ScrapedDocument): F[Unit]
   def find(id: ScrapedDocumentId): F[Option[ScrapedDocument]]
@@ -53,6 +58,9 @@ trait ScrapedDocumentRepository[F[_]] {
   def delete(id: ScrapedDocumentId): F[Boolean]
 }
 
+/** Durable queue boundary for scrape jobs, including safe concurrent claiming and stale-job
+  * recovery.
+  */
 trait ScrapeJobRepository[F[_]] {
   def create(job: ScrapeJob): F[Unit]
   def find(id: ScrapeJobId): F[Option[ScrapeJob]]
@@ -68,12 +76,20 @@ trait ScrapeJobRepository[F[_]] {
   def listByReference(referenceId: ReferenceId): F[List[ScrapeJob]]
 }
 
+/** Maintains and queries the denormalized PostgreSQL full-text search projection. */
 trait RecipeSearchDocumentRepository[F[_]] {
   def create(document: RecipeSearchDocument): F[Unit]
   def find(recipeId: RecipeId): F[Option[RecipeSearchDocument]]
   def update(document: RecipeSearchDocument): F[Boolean]
   def delete(recipeId: RecipeId): F[Boolean]
   def rebuildSearchDocument(recipeId: RecipeId, updatedAt: Instant): F[Unit]
+  def search(query: String): F[List[RecipeSearchResult]]
+}
+
+/** Persists the normalized keyword set belonging to each recipe. */
+trait RecipeKeywordRepository[F[_]] {
+  def listByRecipe(recipeId: RecipeId): F[List[RecipeKeyword]]
+  def replace(recipeId: RecipeId, keywords: List[String]): F[Unit]
 }
 
 object DoobieRepositories {
@@ -87,6 +103,7 @@ object DoobieRepositories {
   val scrapeJobs: ScrapeJobRepository[ConnectionIO] = DoobieScrapeJobRepository
   val searchDocuments: RecipeSearchDocumentRepository[ConnectionIO] =
     DoobieRecipeSearchDocumentRepository
+  val keywords: RecipeKeywordRepository[ConnectionIO] = DoobieRecipeKeywordRepository
 }
 
 private object RepositoryMapping {
@@ -738,23 +755,23 @@ private object DoobieRecipeSearchDocumentRepository
           E'\n',
           recipe.title,
           nullif(recipe.description, ''),
+          keyword_values.keyword_text,
           reference_values.reference_text,
           meals.meal_text,
           scraped.scraped_text
         ),
-        to_tsvector(
-          'english',
-          concat_ws(
-            E'\n',
-            recipe.title,
-            nullif(recipe.description, ''),
-            reference_values.reference_text,
-            meals.meal_text,
-            scraped.scraped_text
-          )
-        ),
+        setweight(to_tsvector('english', recipe.title), 'A') ||
+          setweight(to_tsvector('english', coalesce(keyword_values.keyword_text, '')), 'B') ||
+          setweight(to_tsvector('english', concat_ws(E'\n', nullif(recipe.description, ''), reference_values.reference_text)), 'C') ||
+          setweight(to_tsvector('english', concat_ws(E'\n', meals.meal_text, scraped.scraped_text)), 'D'),
         $updatedAt
       from recipes recipe
+      left join lateral (
+        select string_agg(keyword.keyword, E'\n' order by lower(keyword.keyword), keyword.id)
+          as keyword_text
+        from recipe_keywords keyword
+        where keyword.recipe_id = recipe.id
+      ) keyword_values on true
       left join lateral (
         select string_agg(
           concat_ws(' ', reference.display_name, reference.url, reference.citation),
@@ -787,9 +804,60 @@ private object DoobieRecipeSearchDocumentRepository
           updated_at = excluded.updated_at
     """.update.run.void
 
+  override def search(query: String): ConnectionIO[List[RecipeSearchResult]] =
+    sql"""
+      with search_query as (
+        select websearch_to_tsquery('english', $query) as value
+      )
+      select recipe.id, recipe.title, recipe.description, recipe.primary_photo_id,
+             recipe.created_at, recipe.updated_at, recipe.last_made_at,
+             (
+               ts_rank_cd(document.search_vector, search_query.value, 32) * 10.0 +
+               greatest(
+                 similarity(recipe.title, $query),
+                 similarity(document.plain_text, $query) * 0.35
+               )
+             ) as rank
+      from recipe_search_documents document
+      join recipes recipe on recipe.id = document.recipe_id
+      cross join search_query
+      where document.search_vector @@ search_query.value
+         or similarity(recipe.title, $query) >= 0.18
+      order by rank desc, recipe.updated_at desc, recipe.id
+    """
+      .query[(RepositoryMapping.RecipeRow, Double)]
+      .to[List]
+      .map(_.map { case (recipe, rank) =>
+        RecipeSearchResult(RepositoryMapping.recipe(recipe), rank)
+      })
+
   override def delete(recipeId: RecipeId): ConnectionIO[Boolean] =
     sql"""
       delete from recipe_search_documents
       where recipe_id = ${RecipeId.value(recipeId)}
     """.update.run.map(_ > 0)
+}
+
+private object DoobieRecipeKeywordRepository extends RecipeKeywordRepository[ConnectionIO] {
+  override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[RecipeKeyword]] =
+    sql"""
+      select id, recipe_id, keyword
+      from recipe_keywords
+      where recipe_id = ${RecipeId.value(recipeId)}
+      order by lower(keyword), id
+    """
+      .query[(UUID, UUID, String)]
+      .to[List]
+      .map(_.map { case (id, storedRecipeId, keyword) =>
+        RecipeKeyword(id, RecipeId(storedRecipeId), keyword)
+      })
+
+  override def replace(recipeId: RecipeId, keywords: List[String]): ConnectionIO[Unit] =
+    sql"delete from recipe_keywords where recipe_id = ${RecipeId.value(recipeId)}".update.run.void *>
+      keywords.traverse_ { keyword =>
+        sql"""
+          insert into recipe_keywords (id, recipe_id, keyword)
+          values (${UUID.randomUUID()}, ${RecipeId.value(recipeId)}, $keyword)
+        """.update.run.void
+      }
 }

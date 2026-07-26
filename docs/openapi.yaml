@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Cooking Blog API
-  version: 0.4.0
-  description: Authenticated recipe, meal, reference, and photo API.
+  version: 0.5.0
+  description: Authenticated recipe, meal, reference, photo, and ranked search API.
 servers:
   - url: http://localhost:8080
 security:
@@ -476,12 +476,20 @@ components:
       properties:
         title: { type: string, maxLength: 200 }
         description: { type: string, maxLength: 20000, default: "" }
+        keywords:
+          type: string
+          maxLength: 5000
+          description: Comma-separated tags; whitespace is trimmed and duplicates are removed case-insensitively.
     UpdateRecipe:
       type: object
       minProperties: 1
       properties:
         title: { type: string, maxLength: 200 }
         description: { type: string, maxLength: 20000 }
+        keywords:
+          type: string
+          maxLength: 5000
+          description: Replaces all recipe keywords; an empty string clears them.
     Meal:
       type: object
       required: [id, recipeId, notes, cookedAt, createdAt, updatedAt]
