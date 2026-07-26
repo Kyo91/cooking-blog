@@ -377,6 +377,15 @@ remain table-oriented. Services enforce that nested IDs belong together.
 - New/edit meal page: cooked date/time, notes, camera-friendly multi-photo
   upload, previews, and captions.
 
+*** Frontend follow-up
+
+The first browser implementation may use a small amount of progressively
+enhancing JavaScript alongside server-rendered ScalaTags pages. Keep that code
+as a cohesive static asset rather than growing multiple inline page scripts.
+If browser-side form state, uploads, and live updates become materially more
+complex, evaluate Scala.js as the next frontend boundary; do not introduce it
+until that complexity justifies its build and maintenance cost.
+
 The =+= link should encode the current query as a parameter such as
 =/recipes/new?title=grilled%20chicken= and the server must still validate it.
 
@@ -666,7 +675,7 @@ order. PostgreSQL-backed API coverage verifies title priority, normalized
 keyword matching, typo fallback, cursor behavior, and the representative
 grilled-chicken query shape.
 
-** Phase 7: Browser experience
+** DONE Phase 7: Browser experience
 
 - Implement the responsive home grid and debounced search partial.
 - Implement =+= prepopulation from the active query.
@@ -678,6 +687,21 @@ grilled-chicken query shape.
 
 Exit criterion: the complete primary workflow is comfortable on both phone and
 desktop without direct API use.
+
+Implemented as server-rendered HTML enhanced by locally vendored HTMX and a
+single authenticated static application asset. Page-oriented, CSRF-protected
+form routes cover recipe, source, meal, caption, primary-photo, import retry,
+and deletion flows while the JSON API remains unchanged. Browser JavaScript is
+limited to HTMX glue, source rows, validation/focus handling, confirmation
+dialogs, photo preview, and multipart upload progress.
+
+Accessible error associations, invalid-field focus, live save/import/upload
+status, visible focus styling, and responsive controls support keyboard and
+phone use. PostgreSQL-backed Scala verification passes, as do Playwright flows
+for search/create prepopulation, sources, responsive phone layout, import
+state, meal/photo upload, captions, primary selection, and deletion. Manual
+screen-reader, keyboard, and responsive smoke testing was accepted as adequate
+for this stage.
 
 ** Phase 8: Laptop deployment and release
 

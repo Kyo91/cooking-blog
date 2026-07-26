@@ -48,6 +48,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         anonymousMedia <- app.run(
           Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000")
         )
+        anonymousStatic <- app.run(Request[IO](GET, uri"/static/app-v1.js"))
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
         anonymousLogout <- app.run(Request[IO](POST, uri"/logout"))
@@ -87,6 +88,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(anonymousHome.status, Status.SeeOther)
         assertEquals(anonymousApi.status, Status.Unauthorized)
         assertEquals(anonymousMedia.status, Status.SeeOther)
+        assertEquals(anonymousStatic.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)
         assertEquals(anonymousLogout.status, Status.SeeOther)
@@ -96,6 +98,73 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(authenticatedHealth.status, Status.Ok)
         assertEquals(logout.status, Status.SeeOther)
         assertEquals(afterLogout.status, Status.SeeOther)
+      }
+    }
+  }
+
+  test("authenticated browser pages provide searchable recipe capture flow") {
+    testApp.use { app =>
+      for {
+        login <- app.run(
+          Request[IO](POST, uri"/login")
+            .withEntity(UrlForm("username" -> "admin", "password" -> "test"))
+        )
+        sessionCookie <- requiredCookie(login, "cooking_blog_session")
+        csrfCookie <- requiredCookie(login, "cooking_blog_csrf")
+        home <- app.run(
+          withCookies(Request[IO](GET, uri"/?q=grilled+chicken"), sessionCookie, csrfCookie)
+        )
+        homeBody <- home.as[String]
+        newRecipe <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/recipes/new?title=grilled+chicken"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        newRecipeBody <- newRecipe.as[String]
+        search <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/recipes/search?q=grilled+chicken"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        htmx <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/static/htmx-2.0.4.min.js"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        appScript <- app.run(
+          withCookies(Request[IO](GET, uri"/static/app-v1.js"), sessionCookie, csrfCookie)
+        )
+        invalidRecipe <- app.run(
+          withCookies(
+            Request[IO](POST, uri"/recipes")
+              .withEntity(UrlForm("csrf_token" -> csrfCookie.content, "title" -> "")),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        invalidRecipeBody <- invalidRecipe.as[String]
+      } yield {
+        assertEquals(home.status, Status.Ok)
+        assert(homeBody.contains("id=\"recipe-search\""))
+        assert(homeBody.contains("id=\"recipe-sort\""))
+        assert(homeBody.contains("Most recently cooked"))
+        assert(homeBody.contains("id=\"recipe-results\""))
+        assert(homeBody.contains("/recipes/new?title=grilled+chicken"))
+        assertEquals(newRecipe.status, Status.Ok)
+        assert(newRecipeBody.contains("value=\"grilled chicken\""))
+        assert(newRecipeBody.contains("id=\"keywords\""))
+        assert(newRecipeBody.contains("id=\"add-recipe-source\""))
+        assertEquals(search.status, Status.Ok)
+        assertEquals(htmx.status, Status.Ok)
+        assertEquals(appScript.status, Status.Ok)
+        assertEquals(invalidRecipe.status, Status.BadRequest)
+        assert(invalidRecipeBody.contains("form-error"))
       }
     }
   }
