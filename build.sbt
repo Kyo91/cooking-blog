@@ -36,7 +36,9 @@ lazy val root = project
       http4sEmberServer,
       log4cats,
       logback,
+      metadataExtractor,
       scalaTags,
+      webpImageIo,
       munitCatsEffect % Test
     )
   )

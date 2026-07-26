@@ -9,8 +9,10 @@ object Dependencies {
   private val http4sVersion = "0.23.32"
   private val log4catsVersion = "2.7.1"
   private val logbackVersion = "1.5.18"
+  private val metadataExtractorVersion = "2.21.0"
   private val munitCatsEffectVersion = "2.2.0"
   private val scalaTagsVersion = "0.13.1"
+  private val webpImageIoVersion = "3.12.0"
 
   val catsEffect = "org.typelevel" %% "cats-effect" % catsEffectVersion
   val ciris = "is.cir" %% "ciris" % cirisVersion
@@ -28,7 +30,11 @@ object Dependencies {
     "org.http4s" %% "http4s-ember-server" % http4sVersion
   val log4cats = "org.typelevel" %% "log4cats-slf4j" % log4catsVersion
   val logback = "ch.qos.logback" % "logback-classic" % logbackVersion % Runtime
+  val metadataExtractor =
+    "com.drewnoakes" % "metadata-extractor" % metadataExtractorVersion
   val scalaTags = "com.lihaoyi" %% "scalatags" % scalaTagsVersion
+  val webpImageIo =
+    "com.twelvemonkeys.imageio" % "imageio-webp" % webpImageIoVersion
   val munitCatsEffect =
     "org.typelevel" %% "munit-cats-effect" % munitCatsEffectVersion
 }

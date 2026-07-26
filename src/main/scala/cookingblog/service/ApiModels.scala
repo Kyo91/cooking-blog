@@ -11,6 +11,9 @@ object ApiError {
   final case class NotFound(resource: String) extends ApiError
   final case class Conflict(message: String) extends ApiError
   final case class InvalidRelationship(message: String) extends ApiError
+  final case class UnsupportedMedia(message: String) extends ApiError
+  final case class PayloadTooLarge(message: String) extends ApiError
+  final case class UnavailableDependency(message: String) extends ApiError
 }
 
 enum RecipeSort(val value: String) {
@@ -45,3 +48,4 @@ final case class UpdateReferenceInput(
     citation: Option[String],
     displayName: Option[String]
 )
+final case class UpdatePhotoInput(comment: Option[String])

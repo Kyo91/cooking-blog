@@ -4,6 +4,7 @@ import cats.syntax.all.*
 import ciris.*
 
 import scala.concurrent.duration.*
+import java.nio.file.{Path, Paths}
 
 final case class HttpConfig(host: String, port: Int)
 
@@ -21,7 +22,14 @@ final case class AuthConfig(
     cookieSecure: Boolean
 )
 
-final case class AppConfig(http: HttpConfig, database: DatabaseConfig, auth: AuthConfig)
+final case class PhotoConfig(directory: Path)
+
+final case class AppConfig(
+    http: HttpConfig,
+    database: DatabaseConfig,
+    auth: AuthConfig,
+    photos: PhotoConfig
+)
 
 object AppConfig {
   private val http =
@@ -50,6 +58,12 @@ object AppConfig {
       AuthConfig(username, password, sessionHours.hours, cookieSecure)
     }
 
+  private val photos =
+    env("PHOTO_DIRECTORY")
+      .as[String]
+      .default("./data/photos")
+      .map(value => PhotoConfig(Paths.get(value)))
+
   val load: ConfigValue[Effect, AppConfig] =
-    (http, database, auth).parMapN(AppConfig.apply)
+    (http, database, auth, photos).parMapN(AppConfig.apply)
 }

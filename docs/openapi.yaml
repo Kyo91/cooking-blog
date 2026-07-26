@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Cooking Blog API
-  version: 0.3.0
-  description: Authenticated Phase 3 recipe, meal, and reference API.
+  version: 0.4.0
+  description: Authenticated recipe, meal, reference, and photo API.
 servers:
   - url: http://localhost:8080
 security:
@@ -236,6 +236,126 @@ paths:
         "403": { $ref: "#/components/responses/InvalidCsrf" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/InvalidRelationship" }
+  /api/v1/recipes/{recipeId}/meals/{mealId}/photos:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/MealId" }
+    post:
+      operationId: uploadPhotos
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, format: binary }
+                comment: { type: string, maxLength: 2000 }
+      responses:
+        "201":
+          description: Photos decoded, normalized, stored, and recorded.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Photo" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMedia" }
+  /api/v1/recipes/{recipeId}/meals/{mealId}/photos/{photoId}:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/MealId" }
+      - { $ref: "#/components/parameters/PhotoId" }
+    patch:
+      operationId: updatePhotoComment
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePhoto" }
+      responses:
+        "200":
+          description: Photo comment updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Photo" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+    delete:
+      operationId: deletePhoto
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "204": { description: Photo metadata and files permanently deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+  /api/v1/recipes/{recipeId}/primary-photo/{photoId}:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/PhotoId" }
+    put:
+      operationId: selectPrimaryPhoto
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+      responses:
+        "200":
+          description: Recipe with its explicit primary photo selected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recipe" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InvalidCsrf" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
+  /media/{photoId}:
+    parameters:
+      - { $ref: "#/components/parameters/PhotoId" }
+      - { $ref: "#/components/parameters/PhotoVariant" }
+    get:
+      operationId: getPhotoMedia
+      responses:
+        "200":
+          description: Authenticated immutable photo bytes.
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /media/recipes/{recipeId}/primary:
+    parameters:
+      - { $ref: "#/components/parameters/RecipeId" }
+      - { $ref: "#/components/parameters/PhotoVariant" }
+    get:
+      operationId: getRecipePrimaryPhoto
+      description: Returns the explicit primary photo, or the latest meal photo as fallback.
+      responses:
+        "200":
+          description: Authenticated primary or fallback photo bytes.
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 components:
   securitySchemes:
     sessionCookie:
@@ -263,6 +383,19 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    PhotoId:
+      name: photoId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PhotoVariant:
+      name: variant
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [original, display, thumbnail]
+        default: display
   responses:
     Unauthorized:
       description: No active authenticated session.
@@ -291,6 +424,16 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     InvalidRelationship:
       description: The nested resource does not belong to the recipe in the path.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: An individual photo exceeds 10,000,000 bytes.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMedia:
+      description: The photo did not decode as JPEG, PNG, or WebP.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -348,6 +491,25 @@ components:
       properties:
         notes: { type: string, maxLength: 20000 }
         cookedAt: { type: string, format: date-time }
+    Photo:
+      type: object
+      required: [id, mealId, originalFilename, contentType, byteSize, width, height, comment, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        mealId: { type: string, format: uuid }
+        originalFilename: { type: string, maxLength: 255 }
+        contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        byteSize: { type: integer, minimum: 1, maximum: 10000000 }
+        width: { type: [integer, "null"], minimum: 1 }
+        height: { type: [integer, "null"], minimum: 1 }
+        comment: { type: [string, "null"], maxLength: 2000 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    UpdatePhoto:
+      type: object
+      required: [comment]
+      properties:
+        comment: { type: [string, "null"], maxLength: 2000 }
     RecipeReference:
       type: object
       required: [id, recipeId, kind, url, citation, displayName, importStatus, createdAt, updatedAt]

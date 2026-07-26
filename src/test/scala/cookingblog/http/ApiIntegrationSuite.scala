@@ -6,6 +6,7 @@ import ciris.Secret
 import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
+import cookingblog.storage.LocalPhotoStore
 import io.circe.Json
 import io.circe.jawn.parse
 import munit.CatsEffectSuite
@@ -18,8 +19,10 @@ import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
 
 import java.security.SecureRandom
+import java.nio.file.Files
 import java.time.Instant
 import java.util.UUID
+import scala.jdk.CollectionConverters.*
 import scala.concurrent.duration.*
 
 final class ApiIntegrationSuite extends CatsEffectSuite {
@@ -336,7 +339,9 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
-      http = AppHttp(credentials, manager, transactor, authConfig)
+      photoDirectory <- temporaryDirectory
+      photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
+      http = AppHttp(credentials, manager, transactor, authConfig, photoStore)
     } yield http.app
 
   private def login(app: HttpApp[IO]): IO[Authenticated] =
@@ -418,5 +423,25 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
         .downArray
         .get[String]("id")
         .leftMap(error => RuntimeException(error.message))
+    )
+
+  private val temporaryDirectory: Resource[IO, java.nio.file.Path] =
+    Resource.make(IO.blocking(Files.createTempDirectory("cooking-blog-test-")))(directory =>
+      IO.blocking {
+        val stream = Files.walk(directory)
+        try {
+          stream
+            .iterator()
+            .asScala
+            .toList
+            .sortBy(_.getNameCount)
+            .reverse
+            .foreach(path => {
+              val _ = Files.deleteIfExists(path)
+            })
+        } finally {
+          stream.close()
+        }
+      }
     )
 }

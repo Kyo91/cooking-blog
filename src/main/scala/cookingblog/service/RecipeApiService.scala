@@ -18,9 +18,11 @@ final class RecipeApiService(
     transactor: Transactor[IO],
     recipes: RecipeRepository[ConnectionIO],
     meals: MealRepository[ConnectionIO],
+    photos: PhotoRepository[ConnectionIO],
     references: RecipeReferenceRepository[ConnectionIO],
     scrapeJobs: ScrapeJobRepository[ConnectionIO],
-    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO]
+    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO],
+    photoCleanup: PhotoCleanup[IO]
 ) {
   private val MaxTitleLength = 200
   private val MaxDescriptionLength = 20000
@@ -147,9 +149,25 @@ final class RecipeApiService(
       }
     }
 
-  def deleteRecipe(id: RecipeId): IO[Either[ApiError, Unit]] =
-    transact(recipes.delete(id))
-      .map(deleted => Either.cond(deleted, (), NotFound("recipe")))
+  def deleteRecipe(id: RecipeId): IO[Either[ApiError, Unit]] = {
+    val program =
+      recipes.find(id).flatMap {
+        case None =>
+          NotFound("recipe").asLeft[List[String]].pure[ConnectionIO]
+        case Some(_) =>
+          photos.listByRecipe(id).flatMap { storedPhotos =>
+            recipes.delete(id).map { deleted =>
+              Either.cond(
+                deleted,
+                storedPhotos.map(_.storageKey),
+                NotFound("recipe")
+              )
+            }
+          }
+      }
+
+    transact(program).flatMap(completeDeletion)
+  }
 
   def createMeal(
       recipeId: RecipeId,
@@ -244,16 +262,48 @@ final class RecipeApiService(
     now.flatMap { timestamp =>
       val program =
         meals.find(mealId).flatMap {
-          case None => NotFound("meal").asLeft[Unit].pure[ConnectionIO]
+          case None =>
+            NotFound("meal").asLeft[List[String]].pure[ConnectionIO]
           case Some(meal) if meal.recipeId != recipeId =>
             InvalidRelationship("meal does not belong to recipe")
-              .asLeft[Unit]
+              .asLeft[List[String]]
               .pure[ConnectionIO]
           case Some(_) =>
-            (meals.delete(mealId) *>
-              recipes.refreshLastMadeAt(recipeId, timestamp) *>
-              searchDocuments.rebuildSearchDocument(recipeId, timestamp))
-              .as(().asRight[ApiError])
+            photos.listByMeal(mealId).flatMap { storedPhotos =>
+              (meals.delete(mealId) *>
+                recipes.refreshLastMadeAt(recipeId, timestamp) *>
+                searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                .as(storedPhotos.map(_.storageKey).asRight[ApiError])
+            }
+        }
+      transact(program).flatMap(completeDeletion)
+    }
+
+  def selectPrimaryPhoto(
+      recipeId: RecipeId,
+      photoId: PhotoId
+  ): IO[Either[ApiError, Recipe]] =
+    now.flatMap { timestamp =>
+      val program =
+        (recipes.find(recipeId), photos.find(photoId)).tupled.flatMap {
+          case (None, _) =>
+            NotFound("recipe").asLeft[Recipe].pure[ConnectionIO]
+          case (_, None) =>
+            NotFound("photo").asLeft[Recipe].pure[ConnectionIO]
+          case (Some(recipe), Some(photo)) =>
+            meals.find(photo.mealId).flatMap {
+              case Some(meal) if meal.recipeId == recipeId =>
+                val updated =
+                  recipe.copy(
+                    primaryPhotoId = Some(photoId),
+                    updatedAt = timestamp
+                  )
+                recipes.update(updated).as(updated.asRight[ApiError])
+              case _ =>
+                InvalidRelationship("photo does not belong to recipe")
+                  .asLeft[Recipe]
+                  .pure[ConnectionIO]
+            }
         }
       transact(program)
     }
@@ -586,6 +636,16 @@ final class RecipeApiService(
       case _ => throw throwable
     }
 
+  private def completeDeletion(
+      result: Either[ApiError, List[String]]
+  ): IO[Either[ApiError, Unit]] =
+    result match {
+      case Left(error) =>
+        IO.pure(Left(error))
+      case Right(storageKeys) =>
+        photoCleanup.deleteBestEffort(storageKeys).as(Right(()))
+    }
+
   private def transact[A](program: ConnectionIO[A]): IO[A] =
     program.transact(transactor)
 
@@ -601,13 +661,18 @@ final class RecipeApiService(
 }
 
 object RecipeApiService {
-  def apply(transactor: Transactor[IO]): RecipeApiService =
+  def apply(
+      transactor: Transactor[IO],
+      photoCleanup: PhotoCleanup[IO]
+  ): RecipeApiService =
     new RecipeApiService(
       transactor,
       DoobieRepositories.recipes,
       DoobieRepositories.meals,
+      DoobieRepositories.photos,
       DoobieRepositories.references,
       DoobieRepositories.scrapeJobs,
-      DoobieRepositories.searchDocuments
+      DoobieRepositories.searchDocuments,
+      photoCleanup
     )
 }

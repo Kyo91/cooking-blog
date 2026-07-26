@@ -5,7 +5,8 @@ import cats.syntax.all.*
 import cookingblog.auth.*
 import cookingblog.config.AuthConfig
 import cookingblog.http.api.ApiRoutes
-import cookingblog.service.RecipeApiService
+import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
+import cookingblog.storage.PhotoStore
 import doobie.Transactor
 import doobie.implicits.*
 import org.http4s.*
@@ -40,12 +41,20 @@ final class AppHttp(
     credentialsAuthenticator: CredentialsAuthenticator[IO],
     sessionManager: SessionManager[IO],
     transactor: Transactor[IO],
-    authConfig: AuthConfig
+    authConfig: AuthConfig,
+    photoStore: PhotoStore
 )(using logger: Logger[IO]) {
   private val sessionCookieName = "cooking_blog_session"
   private val csrfCookieName = "cooking_blog_csrf"
+  private val photoCleanup = PhotoCleanup(photoStore)
+  private val photoService =
+    PhotoService(transactor, photoStore, photoCleanup)
+  private val recipeService =
+    RecipeApiService(transactor, photoCleanup)
   private val apiRoutes =
-    ApiRoutes(RecipeApiService(transactor), sessionManager)
+    ApiRoutes(recipeService, photoService, sessionManager)
+
+  def cleanupOrphanPhotos: IO[Int] = photoService.cleanupOrphans
 
   lazy val app: HttpApp[IO] =
     RequestId.httpApp(
@@ -120,11 +129,14 @@ final class AppHttp(
           .map(_.withContentType(`Content-Type`(MediaType.application.json)))
 
       case GET -> Root / "health" / "ready" =>
-        sql"select 1".query[Int].unique.transact(transactor).attempt.flatMap {
-          case Right(1) =>
+        (
+          sql"select 1".query[Int].unique.transact(transactor).attempt,
+          photoService.checkStoreWritable
+        ).tupled.flatMap {
+          case (Right(1), true) =>
             Ok("""{"status":"ready"}""")
               .map(_.withContentType(`Content-Type`(MediaType.application.json)))
-          case Right(_) | Left(_) =>
+          case _ =>
             ServiceUnavailable("""{"status":"not_ready"}""")
               .map(_.withContentType(`Content-Type`(MediaType.application.json)))
         }

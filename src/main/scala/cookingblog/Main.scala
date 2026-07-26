@@ -6,6 +6,7 @@ import cookingblog.auth.*
 import cookingblog.config.AppConfig
 import cookingblog.database.Database
 import cookingblog.http.AppHttp
+import cookingblog.storage.LocalPhotoStore
 import org.http4s.ember.server.EmberServerBuilder
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
@@ -30,11 +31,26 @@ object Main extends IOApp.Simple {
       sessionManager =
         SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom)
       credentialsAuthenticator = DummyCredentialsAuthenticator[IO](config.auth)
-      http = AppHttp(credentialsAuthenticator, sessionManager, transactor, config.auth)
+      photoStore <- Resource.eval(LocalPhotoStore.create(config.photos.directory))
+      http =
+        AppHttp(
+          credentialsAuthenticator,
+          sessionManager,
+          transactor,
+          config.auth,
+          photoStore
+        )
       _ <- Resource.make(
         (IO.sleep(1.minute) *> sessionManager.deleteExpiredOrInvalidated.flatMap(count =>
           logger.info(s"Deleted $count expired or invalidated authentication sessions")
         )).foreverM.start
+      )(_.cancel)
+      _ <- Resource.make(
+        (
+          http.cleanupOrphanPhotos.flatMap(count =>
+            logger.info(s"Deleted $count orphaned photo storage directories")
+          ) *> IO.sleep(15.minutes)
+        ).foreverM.start
       )(_.cancel)
       host <- Resource.eval(
         IO.fromOption(Host.fromString(config.http.host))(

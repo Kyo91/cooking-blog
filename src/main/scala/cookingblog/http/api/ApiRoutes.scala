@@ -12,10 +12,13 @@ import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.*
 import org.http4s.dsl.io.*
+import org.http4s.multipart.{Multipart, Part}
+import cookingblog.storage.PhotoVariant
 import org.typelevel.ci.CIString
 
 final class ApiRoutes(
     service: RecipeApiService,
+    photoService: PhotoService,
     sessionManager: SessionManager[IO]
 ) {
   private val csrfHeader = CIString("X-CSRF-Token")
@@ -166,7 +169,206 @@ final class ApiRoutes(
               .flatMap(created(_, Status.Accepted))
           }
         }
+
+      case request @ POST -> Root / "api" / "v1" / "recipes" /
+          rawRecipeId / "meals" / rawMealId / "photos" =>
+        mutation(session, request) {
+          withIds(rawRecipeId, rawMealId) { (recipeId, mealId) =>
+            withMultipart(request) { multipart =>
+              uploadPhotos(recipeId, mealId, multipart).flatMap(
+                created(_, Status.Created)
+              )
+            }
+          }
+        }
+
+      case request @ PATCH -> Root / "api" / "v1" / "recipes" /
+          rawRecipeId / "meals" / rawMealId / "photos" / rawPhotoId =>
+        mutation(session, request) {
+          withPhotoIds(rawRecipeId, rawMealId, rawPhotoId) { (recipeId, mealId, photoId) =>
+            decode[UpdatePhotoInput](request).flatMap(
+              _.traverse(
+                photoService.updateComment(recipeId, mealId, photoId, _)
+              ).map(_.flatten).flatMap(ok)
+            )
+          }
+        }
+
+      case request @ DELETE -> Root / "api" / "v1" / "recipes" /
+          rawRecipeId / "meals" / rawMealId / "photos" / rawPhotoId =>
+        mutation(session, request) {
+          withPhotoIds(rawRecipeId, rawMealId, rawPhotoId) { (recipeId, mealId, photoId) =>
+            photoService
+              .deletePhoto(recipeId, mealId, photoId)
+              .flatMap(noContent)
+          }
+        }
+
+      case request @ PUT -> Root / "api" / "v1" / "recipes" /
+          rawRecipeId / "primary-photo" / rawPhotoId =>
+        mutation(session, request) {
+          withRecipeAndPhotoIds(rawRecipeId, rawPhotoId) { (recipeId, photoId) =>
+            service.selectPrimaryPhoto(recipeId, photoId).flatMap(ok)
+          }
+        }
+
+      case request @ GET -> Root / "media" / "recipes" /
+          rawRecipeId / "primary" =>
+        withRecipeId(rawRecipeId) { recipeId =>
+          withVariant(request) { variant =>
+            photoService
+              .recipePrimaryMedia(recipeId, variant)
+              .flatMap(mediaResponse)
+          }
+        }
+
+      case request @ GET -> Root / "media" / rawPhotoId =>
+        PhotoId.parse(rawPhotoId) match {
+          case Left(_) =>
+            errorResponse(Validation(Map("photoId" -> List("must be a UUID"))))
+          case Right(photoId) =>
+            withVariant(request) { variant =>
+              photoService.media(photoId, variant).flatMap(mediaResponse)
+            }
+        }
     }
+
+  private def withMultipart(
+      request: Request[IO]
+  )(use: Multipart[IO] => IO[Response[IO]]): IO[Response[IO]] =
+    EntityDecoder
+      .mixedMultipartResource[IO](
+        headerLimit = 8192,
+        maxSizeBeforeWrite = 65536,
+        maxParts = 12,
+        failOnLimit = true
+      )
+      .use(decoder =>
+        request
+          .attemptAs(using decoder)
+          .value
+          .flatMap {
+            case Left(_) =>
+              errorResponse(
+                Validation(
+                  Map(
+                    "body" -> List(
+                      "must be multipart/form-data with at most 12 parts"
+                    )
+                  )
+                )
+              )
+            case Right(multipart) => use(multipart)
+          }
+      )
+
+  private def uploadPhotos(
+      recipeId: RecipeId,
+      mealId: MealId,
+      multipart: Multipart[IO]
+  ): IO[Either[ApiError, List[Photo]]] = {
+    val files =
+      multipart.parts.filter(part =>
+        part.name.exists(name => name == "photo" || name == "file") &&
+          part.filename.nonEmpty
+      )
+    val comments = multipart.parts.filter(_.name.contains("comment"))
+    if (files.isEmpty) {
+      IO.pure(Left(Validation(Map("photo" -> List("is required")))))
+    } else if (files.size > 10) {
+      IO.pure(
+        Left(Validation(Map("photo" -> List("at most 10 photos are allowed"))))
+      )
+    } else {
+      readComment(comments).flatMap {
+        case Left(error)    => IO.pure(Left(error))
+        case Right(comment) =>
+          files
+            .foldLeftM[IO, Either[ApiError, List[Photo]]](Right(Nil)) {
+              case (left @ Left(_), _)          => IO.pure(left)
+              case (Right(createdPhotos), part) =>
+                photoService
+                  .upload(
+                    recipeId,
+                    mealId,
+                    part.filename.getOrElse("photo"),
+                    comment,
+                    part.body
+                  )
+                  .flatMap {
+                    case Right(photo) =>
+                      IO.pure(Right(createdPhotos :+ photo))
+                    case Left(error) =>
+                      createdPhotos
+                        .traverse_(photo =>
+                          photoService
+                            .deletePhoto(recipeId, mealId, photo.id)
+                            .void
+                        )
+                        .as(Left(error))
+                  }
+            }
+      }
+    }
+  }
+
+  private def readComment(
+      parts: Vector[Part[IO]]
+  ): IO[Either[ApiError, Option[String]]] =
+    parts.headOption match {
+      case None       => IO.pure(Right(None))
+      case Some(part) =>
+        part.body
+          .take(2001)
+          .compile
+          .to(Array)
+          .map(bytes =>
+            Either.cond(
+              bytes.length <= 2000,
+              Some(String(bytes, java.nio.charset.StandardCharsets.UTF_8)),
+              Validation(
+                Map("comment" -> List("must be at most 2000 bytes"))
+              )
+            )
+          )
+    }
+
+  private def withVariant(
+      request: Request[IO]
+  )(use: PhotoVariant => IO[Response[IO]]): IO[Response[IO]] =
+    request.uri.query.params.get("variant") match {
+      case None | Some("display") => use(PhotoVariant.Display)
+      case Some("thumbnail")      => use(PhotoVariant.Thumbnail)
+      case Some("original")       => use(PhotoVariant.Original)
+      case Some(_)                =>
+        errorResponse(
+          Validation(
+            Map("variant" -> List("must be original, display, or thumbnail"))
+          )
+        )
+    }
+
+  private def mediaResponse(
+      result: Either[ApiError, PhotoMedia]
+  ): IO[Response[IO]] =
+    result.fold(
+      errorResponse,
+      media =>
+        IO.pure(
+          Response[IO](Status.Ok)
+            .withEntity(media.body)
+            .putHeaders(
+              headers.`Content-Type`(
+                MediaType.unsafeParse(media.photo.contentType)
+              ),
+              Header.Raw(
+                CIString("Cache-Control"),
+                "private, max-age=31536000, immutable"
+              ),
+              Header.Raw(CIString("X-Content-Type-Options"), "nosniff")
+            )
+        )
+    )
 
   private def mutation(
       session: AuthenticatedSession,
@@ -235,6 +437,40 @@ final class ApiRoutes(
         )
     }
 
+  private def withPhotoIds(
+      rawRecipeId: String,
+      rawMealId: String,
+      rawPhotoId: String
+  )(
+      use: (RecipeId, MealId, PhotoId) => IO[Response[IO]]
+  ): IO[Response[IO]] =
+    (
+      RecipeId.parse(rawRecipeId),
+      MealId.parse(rawMealId),
+      PhotoId.parse(rawPhotoId)
+    ) match {
+      case (Right(recipeId), Right(mealId), Right(photoId)) =>
+        use(recipeId, mealId, photoId)
+      case (Left(_), _, _) =>
+        errorResponse(Validation(Map("recipeId" -> List("must be a UUID"))))
+      case (_, Left(_), _) =>
+        errorResponse(Validation(Map("mealId" -> List("must be a UUID"))))
+      case (_, _, Left(_)) =>
+        errorResponse(Validation(Map("photoId" -> List("must be a UUID"))))
+    }
+
+  private def withRecipeAndPhotoIds(
+      rawRecipeId: String,
+      rawPhotoId: String
+  )(use: (RecipeId, PhotoId) => IO[Response[IO]]): IO[Response[IO]] =
+    (RecipeId.parse(rawRecipeId), PhotoId.parse(rawPhotoId)) match {
+      case (Right(recipeId), Right(photoId)) => use(recipeId, photoId)
+      case (Left(_), _)                      =>
+        errorResponse(Validation(Map("recipeId" -> List("must be a UUID"))))
+      case (_, Left(_)) =>
+        errorResponse(Validation(Map("photoId" -> List("must be a UUID"))))
+    }
+
   private def ok[A: Encoder](
       result: Either[ApiError, A]
   ): IO[Response[IO]] =
@@ -275,6 +511,17 @@ final class ApiRoutes(
           (Status.Conflict, "conflict", detail, None)
         case InvalidRelationship(detail) =>
           (Status.Conflict, "invalid_relationship", detail, None)
+        case UnsupportedMedia(detail) =>
+          (Status.UnsupportedMediaType, "unsupported_media", detail, None)
+        case ApiError.PayloadTooLarge(detail) =>
+          (Status.PayloadTooLarge, "payload_too_large", detail, None)
+        case UnavailableDependency(detail) =>
+          (
+            Status.ServiceUnavailable,
+            "unavailable_dependency",
+            detail,
+            None
+          )
       }
     val base =
       List(
