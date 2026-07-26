@@ -184,6 +184,12 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
         )
         urlReferenceJson <- responseJson(urlReference)
         urlReferenceId <- jsonString(urlReferenceJson, "id")
+        pendingScrapeStatus <- get(
+          app,
+          auth,
+          s"/api/v1/recipes/$firstId/references/$urlReferenceId/scrape"
+        )
+        pendingScrapeStatusJson <- responseJson(pendingScrapeStatus)
         emptyReferencePatch <- app.run(
           auth.request(
             jsonRequest(
@@ -237,6 +243,11 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
               Json.obj()
             )
           )
+        )
+        bookScrapeStatus <- get(
+          app,
+          auth,
+          s"/api/v1/recipes/$firstId/references/$bookReferenceId/scrape"
         )
         malformedId <- get(app, auth, "/api/v1/recipes/not-a-uuid")
         deletedUrlReference <- delete(
@@ -293,11 +304,23 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
           urlReferenceJson.hcursor.get[String]("importStatus"),
           Right("pending")
         )
+        assertEquals(pendingScrapeStatus.status, Status.Ok)
+        assertEquals(
+          pendingScrapeStatusJson.hcursor.get[String]("importStatus"),
+          Right("pending")
+        )
+        assertEquals(
+          pendingScrapeStatusJson.hcursor
+            .downField("latestJob")
+            .get[String]("status"),
+          Right("pending")
+        )
         assertEquals(emptyReferencePatch.status, Status.BadRequest)
         assertEquals(retried.status, Status.Accepted)
         assertEquals(updatedReference.status, Status.Ok)
         assertEquals(bookReference.status, Status.Created)
         assertEquals(bookScrape.status, Status.BadRequest)
+        assertEquals(bookScrapeStatus.status, Status.BadRequest)
         assertEquals(malformedId.status, Status.BadRequest)
         assertEquals(deletedUrlReference.status, Status.NoContent)
         assertEquals(deletedBookReference.status, Status.NoContent)

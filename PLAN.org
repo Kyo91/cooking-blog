@@ -296,6 +296,20 @@ Store extracted readable text and source metadata.
 A durable database queue prevents imports from disappearing on restart. Claim
 jobs with =FOR UPDATE SKIP LOCKED= so worker concurrency can be increased safely.
 
+** =recipe_keywords=
+
+- =id uuid primary key=
+- =recipe_id uuid not null references recipes(id) on delete cascade=
+- =keyword text not null= with a check requiring non-blank trimmed text.
+- Unique index on =(recipe_id, lower(keyword))=.
+
+Recipes may have user-supplied keyword tags so search does not depend only on
+descriptions and successfully scraped pages. Recipe input accepts keywords as a
+comma-separated string. Split on commas, trim surrounding whitespace from each
+entry, discard empty entries, preserve multi-word keywords, and deduplicate
+case-insensitively. For example, =sous vide, chicken,bbq,grill= becomes
+=["sous vide", "chicken", "bbq", "grill"]=.
+
 ** Search document
 
 Create a denormalized =recipe_search_documents= table (or materialized search
@@ -306,11 +320,11 @@ column) containing one row per recipe:
 - =search_vector tsvector not null=
 - =updated_at timestamptz not null=
 
-Build =plain_text= from the title, description, reference labels/citations,
-scraped text, and meal notes. Maintain it explicitly after relevant writes so
-the behavior is easy to test. Add a GIN index to =search_vector= and a trigram
-index for title/phrase fallback. Rank title matches above description, notes,
-and scraped content.
+Build =plain_text= from the title, description, recipe keywords, reference
+labels/citations, scraped text, and meal notes. Maintain it explicitly after
+relevant writes so the behavior is easy to test. Add a GIN index to
+=search_vector= and a trigram index for title/phrase fallback. Rank title and
+keyword matches above description, notes, and scraped content.
 
 * API and Page Design
 
@@ -594,7 +608,7 @@ directory, configuration and no-backup behavior are documented, and
 PostgreSQL-backed HTTP tests cover upload, display, caption, primary/fallback
 selection, invalid and oversized content, and physical cleanup.
 
-** Phase 5: Durable scraping
+** DONE Phase 5: Durable scraping
 
 - Implement transactional job enqueueing and concurrent job claiming.
 - Implement secure HTTP fetching, print-page discovery, and content extraction.
@@ -604,10 +618,36 @@ selection, invalid and oversized content, and physical cleanup.
 Exit criterion: a submitted recipe returns immediately, survives an application
 restart while pending, and later exposes searchable imported text.
 
+Implemented with a supervised, bounded Cats Effect worker pool and PostgreSQL
+=FOR UPDATE SKIP LOCKED= claims. URL-reference creation and refresh enqueue
+durable jobs; concurrent claims exclude an already-running reference, abandoned
+jobs are recovered after a configurable timeout, and retryable failures use
+bounded exponential backoff with jitter before a terminal attempt limit.
+
+HTTP fetching validates resolved addresses before every request and redirect,
+rejects non-public networks and credential-bearing URLs, and bounds per-host
+connections, redirects, response bytes, request time, and total attempt time.
+Extraction prefers schema.org =Recipe= JSON-LD, falls back to readable main
+content, and uses discoverable print pages only when they pass the same safety
+checks and contain useful content. Successful document upsert, recipe search
+document rebuild, and job completion commit in one transaction. The authenticated
+scrape-status endpoint exposes pending, running, failed, and complete states plus
+imported text, while the existing mutation endpoint supports manual refresh.
+
+Unit and PostgreSQL-backed tests cover the Serious Eats-style recipe fixture,
+fallback and print extraction, SSRF ranges and redirect validation, byte limits,
+backoff, distinct atomic claims, stale recovery, retry, restart durability,
+search-document rebuilding, and API status. The opt-in live test uses the
+original Serious Eats URL and preserves a remote =403= as a terminal policy
+response instead of bypassing it. The laptop robots policy and scraper limits
+are documented in the README.
+
 ** Phase 6: Search
 
 - Implement weighted PostgreSQL full-text search and trigram fallback.
-- Include recipe fields, reference information, scraped content, and meal notes.
+- Add recipe keyword persistence and comma-separated input normalization.
+- Include recipe fields, keywords, reference information, scraped content, and
+  meal notes.
 - Add deterministic ranking and cursor pagination.
 - Tune against a small representative set such as “grilled chicken,” including
   expected related recipes.
@@ -620,6 +660,7 @@ and acceptable interactive latency.
 - Implement the responsive home grid and debounced search partial.
 - Implement =+= prepopulation from the active query.
 - Implement recipe detail/history and edit flows.
+- Add keyword input to the new/edit recipe forms.
 - Implement meal capture with photo previews and clear upload/import progress.
 - Add accessible labels, keyboard navigation, focus handling, and empty/error
   states.

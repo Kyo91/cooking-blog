@@ -24,11 +24,27 @@ final case class AuthConfig(
 
 final case class PhotoConfig(directory: Path)
 
+final case class ScrapeConfig(
+    workerCount: Int,
+    perHostConcurrency: Int,
+    pollInterval: FiniteDuration,
+    staleJobTimeout: FiniteDuration,
+    requestTimeout: FiniteDuration,
+    totalJobTimeout: FiniteDuration,
+    maximumResponseBytes: Long,
+    maximumRedirects: Int,
+    maximumAttempts: Int,
+    baseRetryDelay: FiniteDuration,
+    maximumRetryDelay: FiniteDuration,
+    userAgent: String
+)
+
 final case class AppConfig(
     http: HttpConfig,
     database: DatabaseConfig,
     auth: AuthConfig,
-    photos: PhotoConfig
+    photos: PhotoConfig,
+    scraping: ScrapeConfig
 )
 
 object AppConfig {
@@ -64,6 +80,53 @@ object AppConfig {
       .default("./data/photos")
       .map(value => PhotoConfig(Paths.get(value)))
 
+  private val scraping =
+    (
+      env("SCRAPE_WORKERS").as[Int].default(2),
+      env("SCRAPE_PER_HOST_CONCURRENCY").as[Int].default(1),
+      env("SCRAPE_POLL_MILLIS").as[Long].default(500L),
+      env("SCRAPE_STALE_JOB_MINUTES").as[Long].default(5L),
+      env("SCRAPE_REQUEST_SECONDS").as[Long].default(15L),
+      env("SCRAPE_TOTAL_JOB_SECONDS").as[Long].default(45L),
+      env("SCRAPE_MAX_RESPONSE_BYTES").as[Long].default(2_000_000L),
+      env("SCRAPE_MAX_REDIRECTS").as[Int].default(5),
+      env("SCRAPE_MAX_ATTEMPTS").as[Int].default(5),
+      env("SCRAPE_BASE_RETRY_SECONDS").as[Long].default(30L),
+      env("SCRAPE_MAX_RETRY_MINUTES").as[Long].default(60L),
+      env("SCRAPE_USER_AGENT")
+        .as[String]
+        .default("CookingBlog/0.1 (+personal recipe archive)")
+    ).parMapN {
+      (
+          workerCount,
+          perHostConcurrency,
+          pollMillis,
+          staleJobMinutes,
+          requestSeconds,
+          totalJobSeconds,
+          maximumResponseBytes,
+          maximumRedirects,
+          maximumAttempts,
+          baseRetrySeconds,
+          maximumRetryMinutes,
+          userAgent
+      ) =>
+        ScrapeConfig(
+          workerCount,
+          perHostConcurrency,
+          pollMillis.millis,
+          staleJobMinutes.minutes,
+          requestSeconds.seconds,
+          totalJobSeconds.seconds,
+          maximumResponseBytes,
+          maximumRedirects,
+          maximumAttempts,
+          baseRetrySeconds.seconds,
+          maximumRetryMinutes.minutes,
+          userAgent
+        )
+    }
+
   val load: ConfigValue[Effect, AppConfig] =
-    (http, database, auth, photos).parMapN(AppConfig.apply)
+    (http, database, auth, photos, scraping).parMapN(AppConfig.apply)
 }

@@ -170,6 +170,14 @@ final class ApiRoutes(
           }
         }
 
+      case GET -> Root / "api" / "v1" / "recipes" /
+          rawRecipeId / "references" / rawReferenceId / "scrape" =>
+        withReferenceIds(rawRecipeId, rawReferenceId) { (recipeId, referenceId) =>
+          service
+            .getReferenceScrapeStatus(recipeId, referenceId)
+            .flatMap(ok)
+        }
+
       case request @ POST -> Root / "api" / "v1" / "recipes" /
           rawRecipeId / "meals" / rawMealId / "photos" =>
         mutation(session, request) {

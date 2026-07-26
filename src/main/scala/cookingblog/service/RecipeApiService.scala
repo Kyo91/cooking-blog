@@ -20,6 +20,7 @@ final class RecipeApiService(
     meals: MealRepository[ConnectionIO],
     photos: PhotoRepository[ConnectionIO],
     references: RecipeReferenceRepository[ConnectionIO],
+    scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
     scrapeJobs: ScrapeJobRepository[ConnectionIO],
     searchDocuments: RecipeSearchDocumentRepository[ConnectionIO],
     photoCleanup: PhotoCleanup[IO]
@@ -436,6 +437,41 @@ final class RecipeApiService(
       transact(program)
     }
 
+  def getReferenceScrapeStatus(
+      recipeId: RecipeId,
+      referenceId: ReferenceId
+  ): IO[Either[ApiError, ReferenceScrapeStatus]] = {
+    val program =
+      references.find(referenceId).flatMap {
+        case None =>
+          NotFound("reference").asLeft[ReferenceScrapeStatus].pure[ConnectionIO]
+        case Some(reference) if reference.recipeId != recipeId =>
+          InvalidRelationship("reference does not belong to recipe")
+            .asLeft[ReferenceScrapeStatus]
+            .pure[ConnectionIO]
+        case Some(reference) if reference.kind != ReferenceKind.Url =>
+          Validation(Map("reference" -> List("book references cannot be scraped")))
+            .asLeft[ReferenceScrapeStatus]
+            .pure[ConnectionIO]
+        case Some(reference) =>
+          (
+            scrapeJobs.findLatestByReference(referenceId),
+            scrapedDocuments.findByReference(referenceId)
+          ).tupled.map { case (job, document) =>
+            val status =
+              job.map(_.status) match {
+                case Some(ScrapeJobStatus.Running)   => "running"
+                case Some(ScrapeJobStatus.Succeeded) => "complete"
+                case Some(ScrapeJobStatus.Failed)    => "failed"
+                case _                               => "pending"
+              }
+            ReferenceScrapeStatus(reference.id, status, job, document)
+              .asRight[ApiError]
+          }
+      }
+    transact(program)
+  }
+
   private final case class ValidatedReference(
       kind: ReferenceKind,
       url: Option[String],
@@ -671,6 +707,7 @@ object RecipeApiService {
       DoobieRepositories.meals,
       DoobieRepositories.photos,
       DoobieRepositories.references,
+      DoobieRepositories.scrapedDocuments,
       DoobieRepositories.scrapeJobs,
       DoobieRepositories.searchDocuments,
       photoCleanup

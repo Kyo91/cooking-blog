@@ -236,6 +236,19 @@ paths:
         "403": { $ref: "#/components/responses/InvalidCsrf" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/InvalidRelationship" }
+    get:
+      operationId: getReferenceScrapeStatus
+      description: Returns the latest durable job status and imported readable text, when available.
+      responses:
+        "200":
+          description: Current import status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceScrapeStatus" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidRelationship" }
   /api/v1/recipes/{recipeId}/meals/{mealId}/photos:
     parameters:
       - { $ref: "#/components/parameters/RecipeId" }
@@ -558,6 +571,35 @@ components:
         lastError: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    ScrapedDocument:
+      type: object
+      required: [id, referenceId, sourceUrl, resolvedUrl, title, contentText, contentHash, httpEtag, httpLastModified, scrapedAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        referenceId: { type: string, format: uuid }
+        sourceUrl: { type: string, format: uri }
+        resolvedUrl: { type: [string, "null"], format: uri }
+        title: { type: [string, "null"] }
+        contentText: { type: string }
+        contentHash: { type: string }
+        httpEtag: { type: [string, "null"] }
+        httpLastModified: { type: [string, "null"] }
+        scrapedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ReferenceScrapeStatus:
+      type: object
+      required: [referenceId, importStatus, latestJob, document]
+      properties:
+        referenceId: { type: string, format: uuid }
+        importStatus: { type: string, enum: [pending, running, failed, complete] }
+        latestJob:
+          oneOf:
+            - { $ref: "#/components/schemas/ScrapeJob" }
+            - { type: "null" }
+        document:
+          oneOf:
+            - { $ref: "#/components/schemas/ScrapedDocument" }
+            - { type: "null" }
     Error:
       type: object
       required: [code, message]
