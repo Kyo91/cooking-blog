@@ -746,6 +746,7 @@ final class AppHttp(
           method := "post",
           action := actionUrl,
           attr("data-recipe-form") := "true",
+          attr("data-html-form") := "true",
           input(tpe := "hidden", name := "csrf_token", value := csrfToken),
           label(`for` := "title", "Title"),
           input(
@@ -894,6 +895,7 @@ final class AppHttp(
             method := "post",
             action := s"/recipes/${id(recipe.id)}/references",
             cls := "reference-form",
+            attr("data-html-form") := "true",
             input(tpe := "hidden", name := "csrf_token", value := csrfToken),
             label(`for` := "reference-kind", "Add a source"),
             select(
@@ -908,11 +910,13 @@ final class AppHttp(
                 htmlId := "reference-url",
                 name := "url",
                 tpe := "url",
+                aria.describedby := "reference-form-errors",
                 placeholder := "https://example.com/recipe"
               ),
               input(
                 htmlId := "reference-citation",
                 name := "citation",
+                aria.describedby := "reference-form-errors",
                 placeholder := "Book title, author, page",
                 hidden
               ),
@@ -922,7 +926,12 @@ final class AppHttp(
               cls := "hint",
               "URL imports begin in the background. Book citations are saved as written."
             ),
-            p(cls := "form-error", aria.live := "polite", role := "alert")
+            p(
+              htmlId := "reference-form-errors",
+              cls := "form-error",
+              aria.live := "polite",
+              role := "alert"
+            )
           )
         ),
         section(htmlH2("Cooking history"), meals)
@@ -951,9 +960,14 @@ final class AppHttp(
         )
         val statusLabel =
           if (status == "pending" || status == "running") {
-            span(cls := "status", attr("data-import-active") := "true", status)
+            span(
+              cls := "status",
+              aria.live := "polite",
+              attr("data-import-active") := "true",
+              status
+            )
           } else {
-            span(cls := "status", status)
+            span(cls := "status", aria.live := "polite", status)
           }
         frag(
           p(statusLabel, " ", value.job.flatMap(_.lastError).getOrElse("")),
@@ -970,6 +984,7 @@ final class AppHttp(
           htmlId := s"reference-${id(reference.id)}",
           name := "url",
           tpe := "url",
+          aria.describedby := s"reference-errors-${id(reference.id)}",
           scalatags.Text.attrs.value := reference.url.getOrElse(""),
           required
         )
@@ -977,6 +992,7 @@ final class AppHttp(
         input(
           htmlId := s"reference-${id(reference.id)}",
           name := "citation",
+          aria.describedby := s"reference-errors-${id(reference.id)}",
           scalatags.Text.attrs.value := reference.citation.getOrElse(""),
           required
         )
@@ -988,13 +1004,19 @@ final class AppHttp(
       form(
         method := "post",
         action := endpoint,
+        attr("data-html-form") := "true",
         input(tpe := "hidden", name := "csrf_token", scalatags.Text.attrs.value := csrfToken),
         label(
           `for` := s"reference-${id(reference.id)}",
           if (reference.kind == ReferenceKind.Url) "Recipe URL" else "Book citation"
         ),
         field,
-        p(cls := "form-error", aria.live := "polite", role := "alert"),
+        p(
+          htmlId := s"reference-errors-${id(reference.id)}",
+          cls := "form-error",
+          aria.live := "polite",
+          role := "alert"
+        ),
         button(tpe := "submit", "Save source")
       ),
       retry,
@@ -1020,15 +1042,22 @@ final class AppHttp(
             form(
               method := "post",
               action := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
+              attr("data-html-form") := "true",
               input(tpe := "hidden", name := "csrf_token", value := csrfToken),
               label(`for` := s"caption-${id(photo.id)}", "Caption"),
               input(
                 htmlId := s"caption-${id(photo.id)}",
                 name := "comment",
+                aria.describedby := s"caption-errors-${id(photo.id)}",
                 value := photo.comment.getOrElse(""),
                 maxlength := 1000
               ),
-              p(cls := "form-error", aria.live := "polite", role := "alert"),
+              p(
+                htmlId := s"caption-errors-${id(photo.id)}",
+                cls := "form-error",
+                aria.live := "polite",
+                role := "alert"
+              ),
               button(tpe := "submit", "Save caption")
             )
           ),
@@ -1134,6 +1163,7 @@ final class AppHttp(
         style(raw(styles))
       ),
       body(
+        p(htmlId := "global-status", cls := "sr-only", role := "status", aria.live := "polite"),
         content,
         Option.when(includeScript)(
           frag(
@@ -1210,7 +1240,7 @@ final class AppHttp(
   )
 
   private val styles =
-    """:root{font-family:system-ui,sans-serif;color:#20231f;background:#fbfaf6;line-height:1.45}*{box-sizing:border-box}body{margin:0}main,header{max-width:1100px;margin:auto;padding:1rem}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dedbd1}.brand{font-weight:800;color:inherit;text-decoration:none}h1{line-height:1.1}a{color:#295c43}.button,button{border:1px solid #295c43;border-radius:.5rem;background:#fff;color:#173c2b;padding:.65rem .85rem;font:inherit;text-decoration:none;cursor:pointer}.primary{background:#295c43;color:#fff}.link-button{border:0;padding:0;background:none}.page-heading,.detail-heading{display:flex;justify-content:space-between;gap:1rem;align-items:start}.page-heading .primary{font-size:1.5rem;line-height:1}.recipe-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-top:1rem}.recipe-card,.meal,.reference,.empty-state{border:1px solid #dedbd1;border-radius:.75rem;background:#fff;overflow:hidden;padding:1rem}.recipe-card{padding:0}.recipe-card img{width:100%;height:150px;object-fit:cover;background:#e9e7df}.recipe-card div{padding:0 1rem 1rem}.recipe-card h2{margin-bottom:.25rem}.recipe-card p{margin:.4rem 0}.muted,.hint{color:#62685f}.error,.form-error{color:#a72626}.form-page{max-width:680px}form{display:grid;gap:.65rem}input,textarea{width:100%;font:inherit;padding:.7rem;border:1px solid #989b92;border-radius:.4rem}textarea{min-height:8rem}.inline-form{display:flex;gap:.5rem}.inline-form input{flex:1}.actions{display:flex;flex-wrap:wrap;gap:.5rem}.hero-photo{width:100%;max-height:480px;object-fit:cover;background:#e9e7df;border-radius:.75rem}.chips{display:flex;gap:.4rem;flex-wrap:wrap;padding:0;list-style:none}.chips li,.status{background:#e7f1e8;border-radius:999px;padding:.2rem .55rem;font-size:.9rem}.meal{margin:.8rem 0}.meal>div:first-child{display:flex;justify-content:space-between;align-items:center}.meal-photos,.photo-previews{display:flex;gap:.5rem;flex-wrap:wrap}.meal-photos figure{margin:0;width:110px}.meal-photos img,.photo-previews img{width:110px;height:90px;object-fit:cover;border-radius:.4rem}.meal-photos figcaption{font-size:.8rem}.reference{margin:.5rem 0}.login{max-width:420px;margin-top:8vh}@media(max-width:600px){main,header{padding:.8rem}.detail-heading,.page-heading{flex-direction:column}.actions{width:100%}.actions .button{flex:1;text-align:center}.inline-form{flex-direction:column}.recipe-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}"""
+    """:root{font-family:system-ui,sans-serif;color:#20231f;background:#fbfaf6;line-height:1.45}*{box-sizing:border-box}body{margin:0}main,header{max-width:1100px;margin:auto;padding:1rem}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dedbd1}.brand{font-weight:800;color:inherit;text-decoration:none}h1{line-height:1.1}a{color:#295c43}.button,button{border:1px solid #295c43;border-radius:.5rem;background:#fff;color:#173c2b;padding:.65rem .85rem;font:inherit;text-decoration:none;cursor:pointer}.primary{background:#295c43;color:#fff}.link-button{border:0;padding:0;background:none}:focus-visible{outline:3px solid #1d6fb8;outline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.page-heading,.detail-heading{display:flex;justify-content:space-between;gap:1rem;align-items:start}.page-heading .primary{font-size:1.5rem;line-height:1}.recipe-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;margin-top:1rem}.recipe-card,.meal,.reference,.empty-state{border:1px solid #dedbd1;border-radius:.75rem;background:#fff;overflow:hidden;padding:1rem}.recipe-card{padding:0}.recipe-card img{width:100%;height:150px;object-fit:cover;background:#e9e7df}.recipe-card div{padding:0 1rem 1rem}.recipe-card h2{margin-bottom:.25rem}.recipe-card p{margin:.4rem 0}.muted,.hint{color:#62685f}.error,.form-error{color:#a72626}.form-page{max-width:680px}form{display:grid;gap:.65rem}input,textarea{width:100%;font:inherit;padding:.7rem;border:1px solid #989b92;border-radius:.4rem}textarea{min-height:8rem}.inline-form{display:flex;gap:.5rem}.inline-form input{flex:1}.actions{display:flex;flex-wrap:wrap;gap:.5rem}.hero-photo{width:100%;max-height:480px;object-fit:cover;background:#e9e7df;border-radius:.75rem}.chips{display:flex;gap:.4rem;flex-wrap:wrap;padding:0;list-style:none}.chips li,.status{background:#e7f1e8;border-radius:999px;padding:.2rem .55rem;font-size:.9rem}.meal{margin:.8rem 0}.meal>div:first-child{display:flex;justify-content:space-between;align-items:center}.meal-photos,.photo-previews{display:flex;gap:.5rem;flex-wrap:wrap}.meal-photos figure{margin:0;width:110px}.meal-photos img,.photo-previews img{width:110px;height:90px;object-fit:cover;border-radius:.4rem}.meal-photos figcaption{font-size:.8rem}.reference{margin:.5rem 0}.login{max-width:420px;margin-top:8vh}@media(max-width:600px){main,header{padding:.8rem}.detail-heading,.page-heading{flex-direction:column}.actions{width:100%}.actions .button{flex:1;text-align:center}.inline-form{flex-direction:column}.recipe-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}"""
   @scala.annotation.nowarn("msg=unused private member")
   private val browserScript =
     """<script>(()=>{const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const error=(f,m)=>{const e=f.querySelector('.form-error');if(e){e.textContent=m||'Please correct the highlighted fields.';e.tabIndex=-1;e.focus()}};const json=(f)=>Object.fromEntries(new FormData(f).entries());const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};document.querySelectorAll('.api-form[data-redirect]').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(f.dataset.api,f.dataset.method,json(f));location.href=f.dataset.redirect}catch(x){error(f,x.message)}}));const search=document.querySelector('#recipe-search');if(search){let timer;const link=document.querySelector('#new-recipe'),results=document.querySelector('#recipe-results'),status=document.querySelector('#search-status');const run=()=>{const q=search.value;link.href='/recipes/new?title='+encodeURIComponent(q);clearTimeout(timer);timer=setTimeout(async()=>{status.textContent='Searching…';try{results.innerHTML=await (await fetch('/recipes/search?q='+encodeURIComponent(q))).text();status.textContent=''}catch(_){status.textContent='Search failed. Try again.'}},250)};search.addEventListener('input',run);run()}const photos=document.querySelector('#photos');if(photos){photos.addEventListener('change',()=>{const box=document.querySelector('#photo-previews');box.innerHTML='';[...photos.files].forEach(file=>{const img=document.createElement('img');img.alt=file.name;img.src=URL.createObjectURL(file);box.append(img)})})}const meal=document.querySelector('#meal-form');if(meal){meal.addEventListener('submit',async e=>{e.preventDefault();const progress=document.querySelector('#upload-progress');try{const data=json(meal);data.cookedAt=new Date(data.cookedAt).toISOString();let result=await api(meal.dataset.api,meal.dataset.method,data);const mealId=meal.dataset.mealId||result.id;if(photos?.files.length){progress.textContent='Uploading photos…';const fd=new FormData();[...photos.files].forEach(p=>fd.append('photo',p));const r=await fetch(`/api/v1/recipes/${meal.dataset.recipeId}/meals/${mealId}/photos`,{method:'POST',headers:{'X-CSRF-Token':csrf()},body:fd});if(!r.ok)throw Error('Meal saved, but photo upload failed.');}location.href='/recipes/'+meal.dataset.recipeId}catch(x){error(meal,x.message);progress.textContent=''}})}document.querySelectorAll('.reference-form').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(`/api/v1/recipes/${f.dataset.recipeId}/references`,'POST',{kind:'url',url:f.url.value});location.reload()}catch(x){error(f,x.message)}}))})();</script>"""

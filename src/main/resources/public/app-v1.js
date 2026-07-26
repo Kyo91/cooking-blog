@@ -2,6 +2,10 @@
   "use strict";
 
   const firstInvalid = (root) => root.querySelector("[aria-invalid='true'], :invalid");
+  const announce = (message) => {
+    const status = document.querySelector("#global-status");
+    if (status) status.textContent = message;
+  };
   const updateNewRecipeLink = () => {
     const search = document.querySelector("#recipe-search");
     const link = document.querySelector("#new-recipe");
@@ -74,6 +78,41 @@
     if (form && !window.confirm(form.dataset.confirm)) event.preventDefault();
   });
 
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("[data-html-form]");
+    if (!form) return;
+    event.preventDefault();
+    const error = form.querySelector("[role='alert'], .form-error");
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(new FormData(form))
+      });
+      if (response.ok) {
+        announce("Saved. Loading the updated page.");
+        window.location.assign(response.url);
+        return;
+      }
+      if (!error) return;
+      error.innerHTML = await response.text();
+      const invalid = form.querySelector("input, textarea, select");
+      if (invalid) {
+        invalid.setAttribute("aria-invalid", "true");
+        invalid.focus();
+      } else {
+        error.tabIndex = -1;
+        error.focus();
+      }
+    } catch (_) {
+      if (error) {
+        error.textContent = "Unable to save changes. Please try again.";
+        error.tabIndex = -1;
+        error.focus();
+      }
+    }
+  });
+
   const previews = document.querySelector("#photos");
   if (previews) {
     previews.addEventListener("change", () => {
@@ -119,6 +158,7 @@
       const progress = document.querySelector("#upload-progress");
       try {
         progress.textContent = "Saving cooking entry…";
+        announce("Saving cooking entry.");
         const payload = Object.fromEntries(new FormData(mealForm).entries());
         payload.cookedAt = new Date(payload.cookedAt).toISOString();
         const mealId = mealForm.dataset.mealId;
@@ -129,12 +169,14 @@
         const upload = new FormData();
         [...files].forEach((file) => upload.append("photo", file));
         progress.textContent = "Uploading photos…";
+        announce("Uploading photos.");
         const response = await fetch(`/api/v1/recipes/${mealForm.dataset.recipeId}/meals/${mealId || meal.id}/photos`, {
           method: "POST",
           headers: { "X-CSRF-Token": csrf() },
           body: upload
         });
         if (!response.ok) throw new Error("The cooking entry was saved, but the photo upload failed.");
+        announce("Photos uploaded. Loading the recipe.");
         window.location.href = `/recipes/${mealForm.dataset.recipeId}`;
       } catch (error) {
         progress.textContent = "";
@@ -143,6 +185,11 @@
         output.focus();
       }
     });
+  }
+
+  if (document.querySelector("[data-import-active]")) {
+    announce("A recipe import is in progress.");
+    window.setTimeout(() => window.location.reload(), 3000);
   }
 
 })();
