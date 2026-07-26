@@ -131,6 +131,8 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       } yield {
         assertEquals(home.status, Status.Ok)
         assert(homeBody.contains("id=\"recipe-search\""))
+        assert(homeBody.contains("id=\"recipe-sort\""))
+        assert(homeBody.contains("Most recently cooked"))
         assert(homeBody.contains("id=\"recipe-results\""))
         assert(homeBody.contains("/recipes/new?title=grilled+chicken"))
         assertEquals(newRecipe.status, Status.Ok)

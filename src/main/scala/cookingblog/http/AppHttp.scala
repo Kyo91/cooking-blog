@@ -150,11 +150,12 @@ final class AppHttp(
   private def browserRoutes(session: AuthenticatedSession): HttpRoutes[IO] = HttpRoutes.of[IO] {
     case request @ GET -> Root =>
       val query = request.uri.query.params.get("q").getOrElse("")
-      renderHome(query, session).flatMap(Ok(_, `Content-Type`(MediaType.text.html)))
+      renderHome(query, browserSort(request.uri.query.params.get("sort")), session)
+        .flatMap(Ok(_, `Content-Type`(MediaType.text.html)))
     case request @ GET -> Root / "recipes" / "search" =>
       val query = request.uri.query.params.get("q").getOrElse("")
       recipeService
-        .listRecipes(Some(query), RecipeSort.Recent, 50, None)
+        .listRecipes(Some(query), browserSort(request.uri.query.params.get("sort")), 50, None)
         .map {
           case Right(page) =>
             Ok(recipeCards(page.items, query).render, `Content-Type`(MediaType.text.html))
@@ -195,9 +196,13 @@ final class AppHttp(
       recipeId(rawRecipeId).fold(notFoundPage)(recipeDetailPage)
   }
 
-  private def renderHome(query: String, session: AuthenticatedSession): IO[String] =
+  private def renderHome(
+      query: String,
+      sort: RecipeSort,
+      session: AuthenticatedSession
+  ): IO[String] =
     recipeService
-      .listRecipes(Option(query).filter(_.trim.nonEmpty), RecipeSort.Recent, 50, None)
+      .listRecipes(Option(query).filter(_.trim.nonEmpty), sort, 50, None)
       .map {
         case Right(results) =>
           page(
@@ -223,6 +228,26 @@ final class AppHttp(
                 placeholder := "grilled chicken, weeknight, sous vide",
                 autocomplete := "off",
                 autofocus
+              ),
+              label(`for` := "recipe-sort", "Order recipes by"),
+              select(
+                htmlId := "recipe-sort",
+                name := "sort",
+                option(
+                  value := RecipeSort.Recent.value,
+                  selected := (sort == RecipeSort.Recent),
+                  "Most recently cooked"
+                ),
+                option(
+                  value := RecipeSort.Updated.value,
+                  selected := (sort == RecipeSort.Updated),
+                  "Last updated"
+                ),
+                option(
+                  value := RecipeSort.Title.value,
+                  selected := (sort == RecipeSort.Title),
+                  "Title"
+                )
               ),
               p(htmlId := "search-status", cls := "muted", aria.live := "polite"),
               section(
@@ -338,6 +363,7 @@ final class AppHttp(
           attr("data-api") := action,
           attr("data-method") := method,
           attr("data-redirect") := back,
+          attr("data-source-entry") := "true",
           label(`for` := "title", "Title"),
           input(
             htmlId := "title",
@@ -361,7 +387,14 @@ final class AppHttp(
             placeholder := "sous vide, chicken, bbq"
           ),
           p(cls := "hint", "Separate keywords with commas. Multi-word keywords are kept together."),
-          p(cls := "form-error", aria.live := "polite"),
+          div(
+            htmlId := "recipe-sources",
+            aria.live := "polite",
+            htmlH2("Sources"),
+            p(cls := "hint", "Add one or more recipe URLs or book citations."),
+            button(htmlId := "add-recipe-source", tpe := "button", "Add source")
+          ),
+          p(cls := "form-error", aria.live := "polite", role := "alert"),
           button(
             cls := "primary",
             tpe := "submit",
@@ -708,7 +741,10 @@ final class AppHttp(
         title(s"$titleText · Cooking Blog"),
         style(raw(styles))
       ),
-      body(content, Option.when(includeScript)(raw(browserScript + browserEnhancements)))
+      body(
+        content,
+        Option.when(includeScript)(raw(browserScript + browserEnhancements + browserSortScript))
+      )
     ).render
   private def authenticate(request: Request[IO]): IO[Option[AuthenticatedSession]] = request.cookies
     .find(_.name == sessionCookieName)
@@ -742,6 +778,11 @@ final class AppHttp(
   )
   private def recipeId(raw: String): Option[RecipeId] = RecipeId.parse(raw).toOption
   private def mealId(raw: String): Option[MealId] = MealId.parse(raw).toOption
+  private def browserSort(raw: Option[String]): RecipeSort = raw match {
+    case Some(RecipeSort.Updated.value) => RecipeSort.Updated
+    case Some(RecipeSort.Title.value)   => RecipeSort.Title
+    case _                              => RecipeSort.Recent
+  }
   @targetName("recipeIdText")
   private def id(value: RecipeId): String = RecipeId.value(value).toString
   @targetName("mealIdText")
@@ -778,4 +819,7 @@ final class AppHttp(
 
   private val browserEnhancements =
     """<script>(()=>{const csrf=()=>document.cookie.split('; ').find(v=>v.startsWith('cooking_blog_csrf='))?.split('=').slice(1).join('=')||'';const api=async(url,method,body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let x={};try{x=await r.json()}catch(_){}throw Error(x.message||'Unable to save changes.')}return r.status===204?null:r.json()};const report=(f,m)=>{const e=f.querySelector('.form-error');if(e){e.textContent=m;e.tabIndex=-1;e.focus()}};document.querySelectorAll('.api-form:not([data-redirect])').forEach(f=>f.addEventListener('submit',async e=>{e.preventDefault();try{await api(f.dataset.api,f.dataset.method,Object.fromEntries(new FormData(f).entries()));location.reload()}catch(x){report(f,x.message)}}));document.querySelectorAll('.mutation-button').forEach(b=>b.addEventListener('click',async()=>{if(b.dataset.confirm&&!confirm(b.dataset.confirm))return;try{await api(b.dataset.api,b.dataset.method);location.href=b.dataset.method==='DELETE'&&b.dataset.api.split('/').length===5?'/':location.href}catch(x){alert(x.message)}}));document.querySelectorAll('.enhanced-reference-form').forEach(f=>{const kind=f.kind,url=f.url,citation=f.citation;const toggle=()=>{const book=kind.value==='book';url.hidden=book;citation.hidden=!book;url.required=!book;citation.required=book};kind.addEventListener('change',toggle);toggle();f.addEventListener('submit',async e=>{e.preventDefault();try{const book=kind.value==='book';await api(`/api/v1/recipes/${f.dataset.recipeId}/references`,'POST',book?{kind:'book',citation:citation.value}:{kind:'url',url:url.value});location.reload()}catch(x){report(f,x.message)}})});if(document.querySelector('[data-import-active]'))setTimeout(()=>location.reload(),3000)})();</script>"""
+
+  private val browserSortScript =
+    """<script>(()=>{const original=document.querySelector('#recipe-search'),sort=document.querySelector('#recipe-sort');if(!original||!sort)return;const search=original.cloneNode(true);original.replaceWith(search);let timer;const results=document.querySelector('#recipe-results'),status=document.querySelector('#search-status'),link=document.querySelector('#new-recipe');const run=()=>{const q=search.value,order=sort.value,params=new URLSearchParams({q,sort:order});link.href='/recipes/new?title='+encodeURIComponent(q);history.replaceState(null,'','/?'+params);clearTimeout(timer);timer=setTimeout(async()=>{status.textContent='Searching…';try{results.innerHTML=await (await fetch('/recipes/search?'+params)).text();status.textContent=''}catch(_){status.textContent='Search failed. Try again.'}},250)};search.addEventListener('input',run);sort.addEventListener('change',run)})();</script>"""
 }
