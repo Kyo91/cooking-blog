@@ -4,6 +4,7 @@ import java.time.Instant
 import java.util.UUID
 import scala.util.Try
 
+/** Type-safe wrapper around the UUID representation used by a domain aggregate. */
 trait DomainId[A] {
   def apply(value: UUID): A
   def value(id: A): UUID
@@ -78,6 +79,7 @@ object ScrapeJobStatus {
       .toRight(s"Unknown scrape job status: $value")
 }
 
+/** Shared recipe aggregate; meals, references, keywords, and photos are related records. */
 final case class Recipe(
     id: RecipeId,
     title: String,
@@ -88,6 +90,7 @@ final case class Recipe(
     lastMadeAt: Option[Instant]
 )
 
+/** One dated instance of cooking a recipe, kept separately from the recipe itself. */
 final case class Meal(
     id: MealId,
     recipeId: RecipeId,
@@ -97,6 +100,8 @@ final case class Meal(
     updatedAt: Instant
 )
 
+/** Metadata for a locally stored photo whose bytes are owned by [[cookingblog.storage.PhotoStore]].
+  */
 final case class Photo(
     id: PhotoId,
     mealId: MealId,
@@ -111,6 +116,7 @@ final case class Photo(
     updatedAt: Instant
 )
 
+/** A user-supplied URL or book citation associated with a recipe. */
 final case class RecipeReference(
     id: ReferenceId,
     recipeId: RecipeId,
@@ -122,6 +128,7 @@ final case class RecipeReference(
     updatedAt: Instant
 )
 
+/** Sanitized, extracted text from a URL reference; raw HTML is deliberately not retained. */
 final case class ScrapedDocument(
     id: ScrapedDocumentId,
     referenceId: ReferenceId,
@@ -136,6 +143,7 @@ final case class ScrapedDocument(
     updatedAt: Instant
 )
 
+/** Durable work-queue entry for importing one URL reference. */
 final case class ScrapeJob(
     id: ScrapeJobId,
     referenceId: ReferenceId,
@@ -149,6 +157,7 @@ final case class ScrapeJob(
     updatedAt: Instant
 )
 
+/** Denormalized searchable projection rebuilt after recipe-related writes. */
 final case class RecipeSearchDocument(
     recipeId: RecipeId,
     plainText: String,
@@ -156,10 +165,12 @@ final case class RecipeSearchDocument(
     updatedAt: Instant
 )
 
+/** A normalized user keyword used to improve recipe recall and ranking. */
 final case class RecipeKeyword(
     id: UUID,
     recipeId: RecipeId,
     keyword: String
 )
 
+/** A recipe with its database-calculated relevance score for a query. */
 final case class RecipeSearchResult(recipe: Recipe, rank: Double)

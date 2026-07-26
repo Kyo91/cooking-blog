@@ -14,6 +14,7 @@ enum PhotoVariant(val filename: String) {
   case Thumbnail extends PhotoVariant("thumbnail")
 }
 
+/** Storage boundary for immutable photo variants addressed by opaque, non-guessable keys. */
 trait PhotoStore {
   def put(
       storageKey: String,

@@ -12,6 +12,11 @@ import org.typelevel.log4cats.Logger
 
 import scala.concurrent.duration.*
 
+/** Supervised durable-job worker for recipe imports.
+  *
+  * Multiple workers claim jobs safely through the repository; this class owns retries, stale-job
+  * recovery, and the atomic document/search/job completion transition.
+  */
 final class ScrapeWorker(
     transactor: Transactor[IO],
     config: ScrapeConfig,
@@ -22,6 +27,9 @@ final class ScrapeWorker(
     jobs: ScrapeJobRepository[ConnectionIO],
     searchDocuments: RecipeSearchDocumentRepository[ConnectionIO]
 )(using logger: Logger[IO]) {
+
+  /** Starts the bounded worker pool and stale-job recovery loop, cancelling all fibers on release.
+    */
   def run: Resource[IO, Unit] = {
     val workers = List.range(1, config.workerCount + 1).map(workerLoop)
     val processes = recoveryLoop :: workers
@@ -47,6 +55,7 @@ final class ScrapeWorker(
   private def claim: IO[Option[ScrapeJob]] =
     Clock[IO].realTimeInstant.flatMap(timestamp => jobs.claimNext(timestamp).transact(transactor))
 
+  /** Runs one claimed job under the total-job timeout and maps expected failures to queue state. */
   private def process(workerNumber: Int, job: ScrapeJob): IO[Unit] = {
     val work =
       references.find(job.referenceId).transact(transactor).flatMap {
@@ -99,6 +108,8 @@ final class ScrapeWorker(
     )
   }
 
+  /** Commits document upsert, search rebuild, and successful job state as one database transaction.
+    */
   private def complete(
       workerNumber: Int,
       job: ScrapeJob,
@@ -147,6 +158,8 @@ final class ScrapeWorker(
         )
     }
 
+  /** Records a bounded error, choosing terminal failure or jittered retry from the failure policy.
+    */
   private def handleFailure(
       workerNumber: Int,
       job: ScrapeJob,
@@ -243,6 +256,8 @@ object ScrapeWorker {
 }
 
 object RetryBackoff {
+
+  /** Returns bounded exponential retry delay with deterministic caller-supplied jitter. */
   def delay(
       attempt: Int,
       base: FiniteDuration,

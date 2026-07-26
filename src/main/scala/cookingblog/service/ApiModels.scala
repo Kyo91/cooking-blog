@@ -4,6 +4,7 @@ import cookingblog.domain.*
 
 import java.time.Instant
 
+/** Expected application failures that map consistently to JSON and HTML HTTP responses. */
 sealed trait ApiError extends Product with Serializable
 
 object ApiError {

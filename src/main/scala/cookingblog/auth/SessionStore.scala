@@ -9,6 +9,7 @@ import doobie.postgres.implicits.*
 
 import java.time.Instant
 
+/** Persistence boundary for hashed, absolute-lifetime browser sessions. */
 trait SessionStore[F[_]] {
   def create(session: SessionRecord): F[Unit]
   def findActive(tokenHash: String, now: Instant): F[Option[SessionRecord]]

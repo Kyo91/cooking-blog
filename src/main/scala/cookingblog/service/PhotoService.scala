@@ -21,6 +21,11 @@ final case class PhotoMedia(
     body: Stream[IO, Byte]
 )
 
+/** Coordinates safe image processing, filesystem storage, and photo metadata transactions.
+  *
+  * Object writes happen before metadata writes and are compensated when the database operation
+  * cannot complete.
+  */
 final class PhotoService(
     transactor: Transactor[IO],
     photoStore: PhotoStore,
@@ -32,6 +37,7 @@ final class PhotoService(
   private val MaxCommentLength = 2000
   private val MaxFilenameLength = 255
 
+  /** Validates the relationship and image stream before storing all immutable image variants. */
   def upload(
       recipeId: RecipeId,
       mealId: MealId,
@@ -97,6 +103,9 @@ final class PhotoService(
         }
     }
 
+  /** Removes metadata first, then cleans physical objects without turning a cleanup retry into data
+    * loss.
+    */
   def deletePhoto(
       recipeId: RecipeId,
       mealId: MealId,
@@ -151,6 +160,8 @@ final class PhotoService(
       )
     }
 
+  /** Deletes only aged store objects that have no database reference, avoiding active upload races.
+    */
   def cleanupOrphans: IO[Int] =
     now.flatMap { timestamp =>
       (
@@ -164,6 +175,7 @@ final class PhotoService(
 
   def checkStoreWritable: IO[Boolean] = photoStore.checkWritable
 
+  /** Compensates stored variants whenever photo metadata cannot be committed. */
   private def saveProcessed(
       recipeId: RecipeId,
       mealId: MealId,

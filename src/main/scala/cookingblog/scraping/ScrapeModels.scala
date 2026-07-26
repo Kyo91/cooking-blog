@@ -32,6 +32,7 @@ final case class ScrapedPage(
     lastModified: Option[String]
 )
 
+/** Fetches a reference URL and returns only safe, extracted recipe content. */
 trait PageScraper {
   def scrape(url: String): cats.effect.IO[ScrapedPage]
 }

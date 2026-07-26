@@ -9,6 +9,7 @@ import doobie.postgres.implicits.*
 import java.time.Instant
 import java.util.UUID
 
+/** Table-oriented persistence boundary for recipe rows and their cached last-made timestamp. */
 trait RecipeRepository[F[_]] {
   def create(recipe: Recipe): F[Unit]
   def find(id: RecipeId): F[Option[Recipe]]
@@ -18,6 +19,7 @@ trait RecipeRepository[F[_]] {
   def refreshLastMadeAt(id: RecipeId, updatedAt: Instant): F[Boolean]
 }
 
+/** Table-oriented persistence boundary for cooking events. */
 trait MealRepository[F[_]] {
   def create(meal: Meal): F[Unit]
   def find(id: MealId): F[Option[Meal]]
@@ -26,6 +28,7 @@ trait MealRepository[F[_]] {
   def listByRecipe(recipeId: RecipeId): F[List[Meal]]
 }
 
+/** Table-oriented persistence boundary for photo metadata, not photo bytes. */
 trait PhotoRepository[F[_]] {
   def create(photo: Photo): F[Unit]
   def find(id: PhotoId): F[Option[Photo]]
@@ -37,6 +40,7 @@ trait PhotoRepository[F[_]] {
   def findPrimaryForRecipe(recipeId: RecipeId): F[Option[Photo]]
 }
 
+/** Table-oriented persistence boundary for recipe URL and book references. */
 trait RecipeReferenceRepository[F[_]] {
   def create(reference: RecipeReference): F[Unit]
   def find(id: ReferenceId): F[Option[RecipeReference]]
@@ -45,6 +49,7 @@ trait RecipeReferenceRepository[F[_]] {
   def listByRecipe(recipeId: RecipeId): F[List[RecipeReference]]
 }
 
+/** Table-oriented persistence boundary for extracted, sanitized import content. */
 trait ScrapedDocumentRepository[F[_]] {
   def create(document: ScrapedDocument): F[Unit]
   def find(id: ScrapedDocumentId): F[Option[ScrapedDocument]]
@@ -53,6 +58,9 @@ trait ScrapedDocumentRepository[F[_]] {
   def delete(id: ScrapedDocumentId): F[Boolean]
 }
 
+/** Durable queue boundary for scrape jobs, including safe concurrent claiming and stale-job
+  * recovery.
+  */
 trait ScrapeJobRepository[F[_]] {
   def create(job: ScrapeJob): F[Unit]
   def find(id: ScrapeJobId): F[Option[ScrapeJob]]
@@ -68,6 +76,7 @@ trait ScrapeJobRepository[F[_]] {
   def listByReference(referenceId: ReferenceId): F[List[ScrapeJob]]
 }
 
+/** Maintains and queries the denormalized PostgreSQL full-text search projection. */
 trait RecipeSearchDocumentRepository[F[_]] {
   def create(document: RecipeSearchDocument): F[Unit]
   def find(recipeId: RecipeId): F[Option[RecipeSearchDocument]]
@@ -77,6 +86,7 @@ trait RecipeSearchDocumentRepository[F[_]] {
   def search(query: String): F[List[RecipeSearchResult]]
 }
 
+/** Persists the normalized keyword set belonging to each recipe. */
 trait RecipeKeywordRepository[F[_]] {
   def listByRecipe(recipeId: RecipeId): F[List[RecipeKeyword]]
   def replace(recipeId: RecipeId, keywords: List[String]): F[Unit]

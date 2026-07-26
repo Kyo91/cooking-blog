@@ -6,6 +6,7 @@ import org.http4s.Uri
 import java.net.{Inet4Address, Inet6Address, InetAddress}
 import java.util.Locale
 
+/** Resolves hostnames so the scraper can reject non-public destinations before each request. */
 trait HostResolver {
   def resolve(host: String): IO[List[InetAddress]]
 }
@@ -15,7 +16,11 @@ object SystemHostResolver extends HostResolver {
     IO.blocking(InetAddress.getAllByName(host).toList)
 }
 
+/** Applies URL-scheme and resolved-address policy before scraper requests and redirects. */
 final class NetworkSafety(resolver: HostResolver) {
+
+  /** Rejects credentials, unsupported schemes, and every non-public DNS answer for the destination.
+    */
   def validate(uri: Uri): IO[Unit] = {
     val scheme = uri.scheme.map(_.value.toLowerCase(Locale.ROOT))
     val host = uri.host.map(_.value)

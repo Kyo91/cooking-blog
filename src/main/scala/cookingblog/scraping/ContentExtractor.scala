@@ -11,6 +11,9 @@ import scala.jdk.CollectionConverters.*
 object ContentExtractor {
   private val MinimumContentLength = 80
 
+  /** Prefers Recipe JSON-LD, then falls back to readable page text and a safe discoverable print
+    * link.
+    */
   def extract(html: String, baseUri: Uri): Either[ScrapeFailure, ExtractedContent] = {
     val document = Jsoup.parse(html, baseUri.renderString)
     val printUri = discoverPrintUri(document)

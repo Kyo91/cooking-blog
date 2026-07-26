@@ -6,6 +6,7 @@ import cookingblog.config.AuthConfig
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
+/** Verifies supplied credentials and yields the authenticated principal when valid. */
 trait CredentialsAuthenticator[F[_]] {
   def authenticate(username: String, password: String): F[Option[Principal]]
 }

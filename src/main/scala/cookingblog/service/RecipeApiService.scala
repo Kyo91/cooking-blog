@@ -14,6 +14,11 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.{Base64, Locale}
 
+/** Application service for the authenticated recipe API.
+  *
+  * It validates boundary input, enforces nested-resource relationships, and keeps related
+  * persistence changes in one transaction.
+  */
 final class RecipeApiService(
     transactor: Transactor[IO],
     recipes: RecipeRepository[ConnectionIO],
@@ -34,6 +39,7 @@ final class RecipeApiService(
   private val MaxKeywordLength = 100
   private val MaxKeywords = 50
 
+  /** Validates a new recipe and atomically creates its keyword and search projections. */
   def createRecipe(input: CreateRecipeInput): IO[Either[ApiError, Recipe]] =
     continue(
       validateRecipe(input.title, input.description.getOrElse("")).flatMap { recipe =>
@@ -66,6 +72,9 @@ final class RecipeApiService(
     transact(recipes.find(id))
       .map(_.toRight(NotFound("recipe")))
 
+  /** Lists recipes either by configured browse order or database relevance. Query cursors embed the
+    * normalized query and sort to prevent accidental reuse with a different result set.
+    */
   def listRecipes(
       query: Option[String],
       sort: RecipeSort,
@@ -124,6 +133,7 @@ final class RecipeApiService(
     }
   }
 
+  /** Replaces requested recipe fields, optionally replacing its complete normalized keyword set. */
   def updateRecipe(
       id: RecipeId,
       input: UpdateRecipeInput
@@ -163,6 +173,7 @@ final class RecipeApiService(
       }
     }
 
+  /** Deletes metadata transactionally, then performs idempotent cleanup of its photo objects. */
   def deleteRecipe(id: RecipeId): IO[Either[ApiError, Unit]] = {
     val program =
       recipes.find(id).flatMap {
@@ -183,6 +194,7 @@ final class RecipeApiService(
     transact(program).flatMap(completeDeletion)
   }
 
+  /** Creates a meal and refreshes both the cached last-made timestamp and search projection. */
   def createMeal(
       recipeId: RecipeId,
       input: CreateMealInput
@@ -227,6 +239,7 @@ final class RecipeApiService(
         )
     }
 
+  /** Updates a related meal while keeping recipe ordering and search content in sync. */
   def updateMeal(
       recipeId: RecipeId,
       mealId: MealId,
@@ -269,6 +282,7 @@ final class RecipeApiService(
       }
     }
 
+  /** Deletes a meal, recalculates recipe state, and cleans associated photo objects afterward. */
   def deleteMeal(
       recipeId: RecipeId,
       mealId: MealId
@@ -293,6 +307,7 @@ final class RecipeApiService(
       transact(program).flatMap(completeDeletion)
     }
 
+  /** Selects a primary photo only after proving that it belongs to the requested recipe. */
   def selectPrimaryPhoto(
       recipeId: RecipeId,
       photoId: PhotoId
@@ -322,6 +337,7 @@ final class RecipeApiService(
       transact(program)
     }
 
+  /** Creates a reference and, for URLs, enqueues durable scrape work in the same transaction. */
   def createReference(
       recipeId: RecipeId,
       input: CreateReferenceInput
@@ -357,6 +373,7 @@ final class RecipeApiService(
       }
     }
 
+  /** Updates a reference, re-enqueuing import work when its URL changes. */
   def updateReference(
       recipeId: RecipeId,
       referenceId: ReferenceId,
@@ -606,6 +623,8 @@ final class RecipeApiService(
       timestamp
     )
 
+  /** Normalizes comma-separated tags while preserving first spelling and rejecting unsafe volume.
+    */
   private def validateKeywords(raw: String): IO[Either[ApiError, List[String]]] = {
     val normalized =
       raw
