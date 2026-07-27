@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Internal helper that runs the release Compose model with its required environment file.
+set -eu
+
+script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+repository_root=$(dirname "$script_directory")
+environment_file=${COOKING_BLOG_ENV_FILE:-"$repository_root/.env.release"}
+
+if [ ! -f "$environment_file" ]; then
+  echo "Missing release environment file: $environment_file" >&2
+  echo "Copy .env.release.example to .env.release and configure it first." >&2
+  exit 1
+fi
+
+cd "$repository_root"
+exec docker compose \
+  --env-file "$environment_file" \
+  -f compose.yaml \
+  -f compose.release.yaml \
+  "$@"

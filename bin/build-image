@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Builds the versioned local cooking-blog Docker image with sbt-native-packager.
+set -eu
+
+cd "$(dirname "$0")/.."
+exec sbt --client Docker/publishLocal

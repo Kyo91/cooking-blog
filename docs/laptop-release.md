@@ -31,12 +31,8 @@ photo paths, and unsafe request/scraper/pool limits.
 Build the pinned image and start the stack:
 
 ```sh
-sbt --client Docker/publishLocal
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  up -d --wait
+./bin/build-image
+./bin/run-local
 ```
 
 Open <http://127.0.0.1:8080/login>. The first startup applies Flyway migrations.
@@ -48,23 +44,34 @@ temporary filesystem, no Linux capabilities, and `no-new-privileges`. The
 `cooking_blog_release_postgres_data` and `cooking_blog_release_photos` named
 volumes are deliberately separate from development data.
 
+## Release scripts
+
+The scripts can be run from any working directory:
+
+| Script | Operation |
+| --- | --- |
+| `./bin/build-image` | Build the version configured by sbt as a local Docker image |
+| `./bin/run-local` | Start the release stack and wait for health checks |
+| `./bin/check-status` | Show release containers, ports, and health |
+| `./bin/show-logs` | Show recent application logs |
+| `./bin/restart-local` | Restart only the application container |
+| `./bin/upgrade-local` | Build and replace the application container |
+| `./bin/stop-local` | Stop the stack without deleting persistent volumes |
+
+They use `.env.release` by default. Set `COOKING_BLOG_ENV_FILE` to use another
+release environment file.
+
 ## Observe and diagnose
 
 Inspect container health and operational logs:
 
 ```sh
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  ps
-
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  logs --tail=200 app
+./bin/check-status
+./bin/show-logs
 ```
+
+`show-logs` displays the latest 200 application lines by default. Set
+`LOG_TAIL`, for example `LOG_TAIL=500 ./bin/show-logs`, to change that limit.
 
 The container health check exercises the public login endpoint. After signing
 in, `/health/ready` verifies PostgreSQL and writable photo storage, while
@@ -89,30 +96,22 @@ passwords, cookies, and URL query strings are not logged.
 A normal restart preserves database-backed sessions, recipes, jobs, and photos:
 
 ```sh
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  restart app
+./bin/restart-local
 ```
 
 For an upgrade, set `COOKING_BLOG_VERSION` in `.env.release` to the newly built
 version, build it, then replace the application container:
 
 ```sh
-sbt --client Docker/publishLocal
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  up -d --no-deps --wait app
+./bin/upgrade-local
 ```
 
 Verify login, `/health/ready`, `/metrics`, search, and a photo before removing
 the prior image. To roll back application code, restore the previous
-`COOKING_BLOG_VERSION` and run the same `up` command. Database rollback is not
-automatic: never run an older image after an incompatible migration. Migrations
-must remain backward compatible across the intended rollback window.
+`COOKING_BLOG_VERSION` and run `./bin/upgrade-local` again. Database rollback
+is not automatic: never run an older image after an incompatible migration.
+Migrations must remain backward compatible across the intended rollback
+window.
 
 Changing the PostgreSQL secret file does not change the password inside an
 already initialized database. Rotate it with a coordinated PostgreSQL
@@ -123,11 +122,7 @@ invalidation, or their absolute 24-hour expiry.
 ## Stop without deleting data
 
 ```sh
-docker compose \
-  --env-file .env.release \
-  -f compose.yaml \
-  -f compose.release.yaml \
-  down
+./bin/stop-local
 ```
 
 Do not add `--volumes` unless permanent deletion of the release database and

@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Builds the configured version and replaces only the application container.
+set -eu
+
+script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+"$script_directory/build-image"
+exec "$script_directory/release-compose" up -d --no-deps --wait app

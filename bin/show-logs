@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Shows the latest application logs; set LOG_TAIL to change the default 200 lines.
+set -eu
+
+script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+exec "$script_directory/release-compose" logs --tail="${LOG_TAIL:-200}" app
