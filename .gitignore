@@ -1,18 +1,21 @@
-.bloop/
 .bsp/
-.idea/
 .metals/
-.scala-build/
 .sbt-cache/
-.vscode/
-target/
+data/
 project/project/
 project/target/
-project/metals.sbt
+target/
 
-.env
-*.log
+# Laptop release configuration and secret material.
+/.env.release*
+!/.env.release.example
+/secrets/**
+!/secrets/README.md
 
-data/photos/
-/AGENTS.md
+/project/metals.sbt
+/.bloop/
 /.codex/
+/src/main/scala/cookingblog/storage/.scala-build/
+/project/.bloop/
+/node_modules/
+/test-results/

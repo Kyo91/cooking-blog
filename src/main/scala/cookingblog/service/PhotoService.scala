@@ -3,6 +3,7 @@ package cookingblog.service
 import cats.effect.{Clock, IO}
 import cats.syntax.all.*
 import cookingblog.domain.*
+import cookingblog.observability.OperationalMetrics
 import cookingblog.repository.*
 import cookingblog.service.ApiError.*
 import cookingblog.storage.*
@@ -32,7 +33,8 @@ final class PhotoService(
     imageProcessor: ImageProcessor,
     meals: MealRepository[ConnectionIO],
     photos: PhotoRepository[ConnectionIO],
-    photoCleanup: PhotoCleanup[IO]
+    photoCleanup: PhotoCleanup[IO],
+    metrics: OperationalMetrics
 ) {
   private val MaxCommentLength = 2000
   private val MaxFilenameLength = 255
@@ -63,20 +65,33 @@ final class PhotoService(
                 )
               )
               .attempt
-              .map {
-                case Right(result)                                        => result
+              .flatMap {
+                case Right(result)                                        => IO.pure(result)
                 case Left(ImageProcessingException.UploadTooLarge(limit)) =>
-                  Left(PayloadTooLarge(s"Photo must be at most $limit bytes"))
+                  photoFailure(
+                    "upload_too_large",
+                    PayloadTooLarge(s"Photo must be at most $limit bytes")
+                  )
                 case Left(ImageProcessingException.EmptyUpload) =>
-                  Left(Validation(Map("photo" -> List("must not be empty"))))
+                  photoFailure(
+                    "empty_upload",
+                    Validation(Map("photo" -> List("must not be empty")))
+                  )
                 case Left(ImageProcessingException.UnsupportedImage) =>
-                  Left(
+                  photoFailure(
+                    "unsupported_image",
                     UnsupportedMedia("Photo must decode as JPEG, PNG, or WebP")
                   )
                 case Left(ImageProcessingException.ImageTooLarge) =>
-                  Left(UnsupportedMedia("Decoded photo dimensions are too large"))
+                  photoFailure(
+                    "dimensions_too_large",
+                    UnsupportedMedia("Decoded photo dimensions are too large")
+                  )
                 case Left(_) =>
-                  Left(UnavailableDependency("Photo processing is unavailable"))
+                  photoFailure(
+                    "processing_unavailable",
+                    UnavailableDependency("Photo processing is unavailable")
+                  )
               }
         }
     }
@@ -304,6 +319,12 @@ final class PhotoService(
     }
 
   private def now: IO[Instant] = Clock[IO].realTimeInstant
+
+  private def photoFailure(
+      reason: String,
+      error: ApiError
+  ): IO[Either[ApiError, Photo]] =
+    metrics.recordPhotoProcessingFailure(reason).as(Left(error))
 }
 
 object PhotoService {
@@ -318,6 +339,23 @@ object PhotoService {
       ImageProcessor(),
       DoobieRepositories.meals,
       DoobieRepositories.photos,
-      photoCleanup
+      photoCleanup,
+      OperationalMetrics.noop
+    )
+
+  def apply(
+      transactor: Transactor[IO],
+      photoStore: PhotoStore,
+      photoCleanup: PhotoCleanup[IO],
+      metrics: OperationalMetrics
+  ): PhotoService =
+    new PhotoService(
+      transactor,
+      photoStore,
+      ImageProcessor(),
+      DoobieRepositories.meals,
+      DoobieRepositories.photos,
+      photoCleanup,
+      metrics
     )
 }

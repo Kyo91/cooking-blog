@@ -5,6 +5,7 @@ import cats.effect.{Clock, IO, Resource}
 import cats.syntax.all.*
 import cookingblog.config.ScrapeConfig
 import cookingblog.domain.*
+import cookingblog.observability.OperationalMetrics
 import cookingblog.repository.*
 import doobie.*
 import doobie.implicits.*
@@ -25,7 +26,8 @@ final class ScrapeWorker(
     references: RecipeReferenceRepository[ConnectionIO],
     scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
     jobs: ScrapeJobRepository[ConnectionIO],
-    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO]
+    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO],
+    metrics: OperationalMetrics
 )(using logger: Logger[IO]) {
 
   /** Starts the bounded worker pool and stale-job recovery loop, cancelling all fibers on release.
@@ -57,55 +59,66 @@ final class ScrapeWorker(
 
   /** Runs one claimed job under the total-job timeout and maps expected failures to queue state. */
   private def process(workerNumber: Int, job: ScrapeJob): IO[Unit] = {
-    val work =
-      references.find(job.referenceId).transact(transactor).flatMap {
-        case None            => IO.unit
-        case Some(reference) =>
-          reference.url match {
-            case None =>
-              handleFailure(
-                workerNumber,
-                job,
-                ScrapeFailure(
-                  "The URL reference did not contain a URL",
-                  retryable = false
+    Clock[IO].monotonic.flatMap { startedAt =>
+      val work =
+        references.find(job.referenceId).transact(transactor).flatMap {
+          case None =>
+            handleFailure(
+              workerNumber,
+              job,
+              ScrapeFailure("The URL reference no longer exists", retryable = false),
+              startedAt
+            )
+          case Some(reference) =>
+            reference.url match {
+              case None =>
+                handleFailure(
+                  workerNumber,
+                  job,
+                  ScrapeFailure(
+                    "The URL reference did not contain a URL",
+                    retryable = false
+                  ),
+                  startedAt
                 )
-              )
-            case Some(url) =>
-              logger.info(
-                s"Scrape worker $workerNumber started job ${ScrapeJobId.value(job.id)} " +
-                  s"attempt ${job.attemptCount}"
-              ) *>
-                scraper.scrape(url).attempt.flatMap {
-                  case Right(page) =>
-                    complete(workerNumber, job, reference, page)
-                  case Left(failure: ScrapeFailure) =>
-                    handleFailure(workerNumber, job, failure)
-                  case Left(error) =>
-                    handleFailure(
-                      workerNumber,
-                      job,
-                      ScrapeFailure(
-                        "An unexpected scraping failure occurred",
-                        retryable = true,
-                        Some(error)
+              case Some(url) =>
+                logger.info(
+                  s"Scrape worker $workerNumber started job ${ScrapeJobId.value(job.id)} " +
+                    s"attempt ${job.attemptCount}"
+                ) *>
+                  scraper.scrape(url).attempt.flatMap {
+                    case Right(page) =>
+                      complete(workerNumber, job, reference, page, startedAt)
+                    case Left(failure: ScrapeFailure) =>
+                      handleFailure(workerNumber, job, failure, startedAt)
+                    case Left(error) =>
+                      handleFailure(
+                        workerNumber,
+                        job,
+                        ScrapeFailure(
+                          "An unexpected scraping failure occurred",
+                          retryable = true,
+                          Some(error)
+                        ),
+                        startedAt
                       )
-                    )
-                }
-          }
-      }
+                  }
+            }
+        }
 
-    work.timeoutTo(
-      config.totalJobTimeout,
-      handleFailure(
-        workerNumber,
-        job,
-        ScrapeFailure(
-          s"The scrape job exceeded ${config.totalJobTimeout.toSeconds} seconds",
-          retryable = true
+      work.timeoutTo(
+        config.totalJobTimeout,
+        handleFailure(
+          workerNumber,
+          job,
+          ScrapeFailure(
+            s"The scrape job exceeded ${config.totalJobTimeout.toSeconds} seconds",
+            retryable = true
+          ),
+          startedAt
         )
       )
-    )
+    }
   }
 
   /** Commits document upsert, search rebuild, and successful job state as one database transaction.
@@ -114,7 +127,8 @@ final class ScrapeWorker(
       workerNumber: Int,
       job: ScrapeJob,
       reference: RecipeReference,
-      page: ScrapedPage
+      page: ScrapedPage,
+      startedAt: FiniteDuration
   ): IO[Unit] =
     Clock[IO].realTimeInstant.flatMap { timestamp =>
       val document =
@@ -155,7 +169,7 @@ final class ScrapeWorker(
       program.transact(transactor) *>
         logger.info(
           s"Scrape worker $workerNumber completed job ${ScrapeJobId.value(job.id)}"
-        )
+        ) *> recordScrape("succeeded", startedAt)
     }
 
   /** Records a bounded error, choosing terminal failure or jittered retry from the failure policy.
@@ -163,7 +177,8 @@ final class ScrapeWorker(
   private def handleFailure(
       workerNumber: Int,
       job: ScrapeJob,
-      failure: ScrapeFailure
+      failure: ScrapeFailure,
+      startedAt: FiniteDuration
   ): IO[Unit] =
     Clock[IO].realTimeInstant.flatMap { timestamp =>
       val message = boundedMessage(failure.message)
@@ -207,7 +222,7 @@ final class ScrapeWorker(
         logger.warn(
           s"Scrape worker $workerNumber ${if (terminal) "failed" else "rescheduled"} " +
             s"job ${ScrapeJobId.value(job.id)} after attempt ${job.attemptCount}: $message"
-        )
+        ) *> recordScrape(if (terminal) "failed" else "retry", startedAt)
     }
 
   private def recoveryLoop: IO[Unit] =
@@ -234,6 +249,12 @@ final class ScrapeWorker(
       .filter(_.nonEmpty)
       .getOrElse("Scraping failed")
       .take(1000)
+
+  private def recordScrape(
+      outcome: String,
+      startedAt: FiniteDuration
+  ): IO[Unit] =
+    Clock[IO].monotonic.flatMap(finishedAt => metrics.recordScrape(outcome, finishedAt - startedAt))
 }
 
 object ScrapeWorker {
@@ -251,7 +272,27 @@ object ScrapeWorker {
       DoobieRepositories.references,
       DoobieRepositories.scrapedDocuments,
       DoobieRepositories.scrapeJobs,
-      DoobieRepositories.searchDocuments
+      DoobieRepositories.searchDocuments,
+      OperationalMetrics.noop
+    )
+
+  def apply(
+      transactor: Transactor[IO],
+      config: ScrapeConfig,
+      scraper: PageScraper,
+      random: Random[IO],
+      metrics: OperationalMetrics
+  )(using Logger[IO]): ScrapeWorker =
+    new ScrapeWorker(
+      transactor,
+      config,
+      scraper,
+      random,
+      DoobieRepositories.references,
+      DoobieRepositories.scrapedDocuments,
+      DoobieRepositories.scrapeJobs,
+      DoobieRepositories.searchDocuments,
+      metrics
     )
 }
 

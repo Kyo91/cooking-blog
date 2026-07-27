@@ -5,6 +5,7 @@ import ciris.Secret
 import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
+import cookingblog.observability.OperationalMetrics
 import cookingblog.storage.LocalPhotoStore
 import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import doobie.implicits.*
@@ -14,6 +15,7 @@ import org.http4s.Method.*
 import org.http4s.implicits.*
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
+import org.typelevel.ci.CIString
 
 import java.security.SecureRandom
 import java.nio.file.Files
@@ -38,7 +40,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
     AuthConfig("admin", Secret("test"), 24.hours, cookieSecure = false)
 
   test("migrates the database and protects every non-login request") {
-    testApp.use { app =>
+    testApp().use { app =>
       for {
         loginPage <- app.run(Request[IO](GET, uri"/login"))
         anonymousHome <- app.run(Request[IO](GET, uri"/"))
@@ -52,6 +54,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         anonymousStatic <- app.run(Request[IO](GET, uri"/static/app-v1.js"))
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
+        anonymousMetrics <- app.run(Request[IO](GET, uri"/metrics"))
         anonymousLogout <- app.run(Request[IO](POST, uri"/logout"))
         invalidLogin <- app.run(
           Request[IO](POST, uri"/login")
@@ -73,6 +76,14 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
             csrfCookie
           )
         )
+        authenticatedMetrics <- app.run(
+          withCookies(
+            Request[IO](GET, uri"/metrics"),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        metricsBody <- authenticatedMetrics.as[String]
         logout <- app.run(
           withCookies(
             Request[IO](POST, uri"/logout")
@@ -92,19 +103,50 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(anonymousStatic.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)
+        assertEquals(anonymousMetrics.status, Status.SeeOther)
         assertEquals(anonymousLogout.status, Status.SeeOther)
         assertEquals(invalidLogin.status, Status.Unauthorized)
         assertEquals(login.status, Status.SeeOther)
         assertEquals(authenticatedHome.status, Status.Ok)
         assertEquals(authenticatedHealth.status, Status.Ok)
+        assertEquals(authenticatedMetrics.status, Status.Ok)
+        assert(metricsBody.contains("cooking_blog_http_requests_total"))
+        assert(metricsBody.contains("""cooking_blog_scrape_jobs{status="failed"}"""))
         assertEquals(logout.status, Status.SeeOther)
         assertEquals(afterLogout.status, Status.SeeOther)
       }
     }
   }
 
+  test("responses include release security headers and enforce the request limit") {
+    testApp(maximumRequestBytes = 1024L).use { app =>
+      for {
+        loginPage <- app.run(Request[IO](GET, uri"/login"))
+        oversizedLogin <- app.run(
+          Request[IO](POST, uri"/login").withEntity(
+            UrlForm("username" -> "admin", "password" -> ("x" * 2000))
+          )
+        )
+      } yield {
+        assertEquals(
+          header(loginPage, "Content-Security-Policy"),
+          Some(
+            "default-src 'self'; base-uri 'none'; connect-src 'self'; " +
+              "form-action 'self'; frame-ancestors 'none'; img-src 'self' blob:; " +
+              "object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+          )
+        )
+        assertEquals(header(loginPage, "X-Content-Type-Options"), Some("nosniff"))
+        assertEquals(header(loginPage, "X-Frame-Options"), Some("DENY"))
+        assert(header(loginPage, "X-Request-ID").exists(_.nonEmpty))
+        assertEquals(oversizedLogin.status, Status.PayloadTooLarge)
+      }
+    }
+  }
+
   test("authenticated browser pages provide searchable recipe capture flow") {
-    testApp.use { app =>
+    val query = s"browser-capture-${System.nanoTime()}"
+    testApp().use { app =>
       for {
         login <- app.run(
           Request[IO](POST, uri"/login")
@@ -113,12 +155,19 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         sessionCookie <- requiredCookie(login, "cooking_blog_session")
         csrfCookie <- requiredCookie(login, "cooking_blog_csrf")
         home <- app.run(
-          withCookies(Request[IO](GET, uri"/?q=grilled+chicken"), sessionCookie, csrfCookie)
+          withCookies(
+            Request[IO](GET, Uri.unsafeFromString(s"/?q=$query")),
+            sessionCookie,
+            csrfCookie
+          )
         )
         homeBody <- home.as[String]
         newRecipe <- app.run(
           withCookies(
-            Request[IO](GET, uri"/recipes/new?title=grilled+chicken"),
+            Request[IO](
+              GET,
+              Uri.unsafeFromString(s"/recipes/new?title=$query")
+            ),
             sessionCookie,
             csrfCookie
           )
@@ -126,7 +175,10 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         newRecipeBody <- newRecipe.as[String]
         search <- app.run(
           withCookies(
-            Request[IO](GET, uri"/recipes/search?q=grilled+chicken"),
+            Request[IO](
+              GET,
+              Uri.unsafeFromString(s"/recipes/search?q=$query")
+            ),
             sessionCookie,
             csrfCookie
           )
@@ -156,9 +208,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assert(homeBody.contains("id=\"recipe-sort\""))
         assert(homeBody.contains("Most recently cooked"))
         assert(homeBody.contains("id=\"recipe-results\""))
-        assert(homeBody.contains("/recipes/new?title=grilled+chicken"))
+        assert(homeBody.contains(s"/recipes/new?title=$query"))
         assertEquals(newRecipe.status, Status.Ok)
-        assert(newRecipeBody.contains("value=\"grilled chicken\""))
+        assert(newRecipeBody.contains(s"value=\"$query\""))
         assert(newRecipeBody.contains("id=\"keywords\""))
         assert(newRecipeBody.contains("id=\"add-recipe-source\""))
         assertEquals(search.status, Status.Ok)
@@ -170,7 +222,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
     }
   }
 
-  private val testApp: Resource[IO, HttpApp[IO]] =
+  private def testApp(
+      maximumRequestBytes: Long = 105_000_000L
+  ): Resource[IO, HttpApp[IO]] =
     for {
       _ <- Resource.eval(Database.migrate(databaseConfig))
       transactor <- Database.transactor(databaseConfig)
@@ -178,12 +232,23 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
+      metrics <- Resource.eval(OperationalMetrics.create)
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
       cleanup = PhotoCleanup(photoStore)
-      photoService = PhotoService(transactor, photoStore, cleanup)
+      photoService = PhotoService(transactor, photoStore, cleanup, metrics)
       recipeService = RecipeApiService(transactor, cleanup)
-      http = AppHttp(credentials, manager, transactor, authConfig, photoService, recipeService)
+      http =
+        AppHttp(
+          credentials,
+          manager,
+          transactor,
+          authConfig,
+          photoService,
+          recipeService,
+          metrics,
+          maximumRequestBytes
+        )
       migrationExists <- Resource.eval(
         sql"""
           select exists (
@@ -216,6 +281,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
     cookies.foldLeft(request)((current, cookie) =>
       current.addCookie(RequestCookie(cookie.name, cookie.content))
     )
+
+  private def header(response: Response[IO], name: String): Option[String] =
+    response.headers.get(CIString(name)).map(_.head.value)
 
   private val temporaryDirectory: Resource[IO, java.nio.file.Path] =
     Resource.make(IO.blocking(Files.createTempDirectory("cooking-blog-test-")))(directory =>

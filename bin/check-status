@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Shows the current containers, published ports, and health for the laptop release.
+set -eu
+
+script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+exec "$script_directory/release-compose" ps

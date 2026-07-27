@@ -1,0 +1,91 @@
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: null
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    ports: !reset []
+
+  photo-volume-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "chown -R 1001:0 /photos && chmod 0770 /photos"]
+    network_mode: none
+    user: "0:0"
+    volumes:
+      - cooking_blog_photos:/photos
+    restart: "no"
+
+  app:
+    image: cooking-blog:${COOKING_BLOG_VERSION:-0.1.0}
+    environment:
+      APP_ENV: production
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      HTTP_MAX_REQUEST_BYTES: 105000000
+      DATABASE_URL: jdbc:postgresql://postgres:5432/cooking_blog
+      DATABASE_USER: cooking_blog
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      DATABASE_POOL_SIZE: 4
+      AUTH_USERNAME: admin
+      AUTH_PASSWORD_FILE: /run/secrets/auth_password
+      AUTH_SESSION_HOURS: 24
+      AUTH_COOKIE_SECURE: "false"
+      PHOTO_DIRECTORY: /var/lib/cooking-blog/photos
+      SCRAPE_WORKERS: 2
+      SCRAPE_PER_HOST_CONCURRENCY: 1
+      SCRAPE_POLL_MILLIS: 500
+      SCRAPE_STALE_JOB_MINUTES: 5
+      SCRAPE_REQUEST_SECONDS: 15
+      SCRAPE_TOTAL_JOB_SECONDS: 45
+      SCRAPE_MAX_RESPONSE_BYTES: 2000000
+      SCRAPE_MAX_REDIRECTS: 5
+      SCRAPE_MAX_ATTEMPTS: 5
+      SCRAPE_BASE_RETRY_SECONDS: 30
+      SCRAPE_MAX_RETRY_MINUTES: 60
+      SCRAPE_USER_AGENT: CookingBlog/0.1 (+personal recipe archive)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      photo-volume-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${COOKING_BLOG_HTTP_PORT:-8080}:8080"
+    secrets:
+      - postgres_password
+      - auth_password
+    volumes:
+      - cooking_blog_photos:/var/lib/cooking-blog/photos
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-ec",
+          "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /login HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  cooking_blog_postgres_data:
+    name: cooking_blog_release_postgres_data
+  cooking_blog_photos:
+    name: cooking_blog_release_photos
+
+secrets:
+  postgres_password:
+    file: ${COOKING_BLOG_POSTGRES_PASSWORD_FILE:?Set COOKING_BLOG_POSTGRES_PASSWORD_FILE to a secret file}
+  auth_password:
+    file: ${COOKING_BLOG_AUTH_PASSWORD_FILE:?Set COOKING_BLOG_AUTH_PASSWORD_FILE to a secret file}
