@@ -4,9 +4,10 @@ import cats.effect.*
 import cats.effect.std.Random
 import com.comcast.ip4s.{Host, Port}
 import cookingblog.auth.*
-import cookingblog.config.AppConfig
+import cookingblog.config.{AppConfig, RuntimeEnvironment}
 import cookingblog.database.Database
 import cookingblog.http.AppHttp
+import cookingblog.observability.OperationalMetrics
 import cookingblog.scraping.*
 import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import cookingblog.storage.LocalPhotoStore
@@ -35,9 +36,10 @@ object Main extends IOApp.Simple {
       sessionManager =
         SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom)
       credentialsAuthenticator = DummyCredentialsAuthenticator[IO](config.auth)
+      metrics <- Resource.eval(OperationalMetrics.create)
       photoStore <- Resource.eval(LocalPhotoStore.create(config.photos.directory))
       photoCleanup = PhotoCleanup(photoStore)
-      photoService = PhotoService(transactor, photoStore, photoCleanup)
+      photoService = PhotoService(transactor, photoStore, photoCleanup, metrics)
       recipeService = RecipeApiService(transactor, photoCleanup)
       client <- EmberClientBuilder
         .default[IO]
@@ -54,7 +56,8 @@ object Main extends IOApp.Simple {
           transactor,
           config.scraping,
           HttpPageScraper(pageFetcher),
-          random
+          random,
+          metrics
         )
       _ <- scrapeWorker.run
       http =
@@ -64,7 +67,9 @@ object Main extends IOApp.Simple {
           transactor,
           config.auth,
           photoService,
-          recipeService
+          recipeService,
+          metrics,
+          config.runtime.maximumRequestBytes
         )
       _ <- Resource.make(
         (IO.sleep(1.minute) *> sessionManager.deleteExpiredOrInvalidated.flatMap(count =>
@@ -99,14 +104,32 @@ object Main extends IOApp.Simple {
       )
     } yield ()
 
-  private def validateConfig(config: AppConfig): IO[Unit] = {
+  private[cookingblog] def validateConfig(config: AppConfig): IO[Unit] = {
     val errors = List(
+      Option.when(config.runtime.environment.isInstanceOf[RuntimeEnvironment.Invalid])(
+        "APP_ENV must be development or production"
+      ),
       Option.when(config.database.poolSize <= 0)("DATABASE_POOL_SIZE must be positive"),
+      Option.when(config.database.poolSize > 32)(
+        "DATABASE_POOL_SIZE cannot exceed 32"
+      ),
+      Option.when(config.runtime.maximumRequestBytes < 10_100_000L)(
+        "HTTP_MAX_REQUEST_BYTES must allow one maximum-size photo"
+      ),
+      Option.when(config.runtime.maximumRequestBytes > 110_000_000L)(
+        "HTTP_MAX_REQUEST_BYTES cannot exceed 110000000"
+      ),
+      Option.when(config.auth.username.trim.isEmpty)(
+        "AUTH_USERNAME must not be blank"
+      ),
       Option.when(config.auth.sessionLifetime != 24.hours)(
         "AUTH_SESSION_HOURS must be 24 for the Phase 1 session policy"
       ),
       Option.when(config.scraping.workerCount <= 0)(
         "SCRAPE_WORKERS must be positive"
+      ),
+      Option.when(config.scraping.workerCount > 8)(
+        "SCRAPE_WORKERS cannot exceed 8"
       ),
       Option.when(config.scraping.perHostConcurrency <= 0)(
         "SCRAPE_PER_HOST_CONCURRENCY must be positive"
@@ -125,8 +148,14 @@ object Main extends IOApp.Simple {
       Option.when(config.scraping.maximumRedirects < 0)(
         "SCRAPE_MAX_REDIRECTS cannot be negative"
       ),
+      Option.when(config.scraping.maximumRedirects > 10)(
+        "SCRAPE_MAX_REDIRECTS cannot exceed 10"
+      ),
       Option.when(config.scraping.maximumAttempts <= 0)(
         "SCRAPE_MAX_ATTEMPTS must be positive"
+      ),
+      Option.when(config.scraping.maximumAttempts > 10)(
+        "SCRAPE_MAX_ATTEMPTS cannot exceed 10"
       ),
       Option.when(config.scraping.pollInterval <= Duration.Zero)(
         "SCRAPE_POLL_MILLIS must be positive"
@@ -150,6 +179,30 @@ object Main extends IOApp.Simple {
       ),
       Option.when(config.scraping.userAgent.trim.isEmpty)(
         "SCRAPE_USER_AGENT must not be blank"
+      ),
+      Option.when(
+        config.runtime.environment == RuntimeEnvironment.Production &&
+          config.database.password.value == "cooking_blog_dev"
+      )(
+        "DATABASE_PASSWORD must not use the development default in production"
+      ),
+      Option.when(
+        config.runtime.environment == RuntimeEnvironment.Production &&
+          config.auth.password.value == "test"
+      )(
+        "AUTH_PASSWORD must not use the development default in production"
+      ),
+      Option.when(
+        config.runtime.environment == RuntimeEnvironment.Production &&
+          config.auth.password.value.length < 16
+      )(
+        "AUTH_PASSWORD must contain at least 16 characters in production"
+      ),
+      Option.when(
+        config.runtime.environment == RuntimeEnvironment.Production &&
+          !config.photos.directory.isAbsolute
+      )(
+        "PHOTO_DIRECTORY must be absolute in production"
       )
     ).flatten
 

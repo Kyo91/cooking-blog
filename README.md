@@ -82,6 +82,17 @@ records contain opaque storage keys; do not rename files within this directory.
 The laptop phase deliberately has no automated photo or PostgreSQL backups.
 Deleting a photo, meal, or recipe permanently removes its photo files.
 
+## Laptop release
+
+The production-like laptop release is built as the versioned
+`cooking-blog:0.1.0` image with sbt-native-packager and run with the release
+Compose overlay. The service remains bound to `127.0.0.1`; do not publish its
+port to a LAN or the internet while it uses the dummy authenticator.
+
+See [`docs/laptop-release.md`](docs/laptop-release.md) for secret creation,
+deployment, health and metrics checks, logs, restart, upgrade, rollback, and
+shutdown commands.
+
 ## Recipe imports
 
 Creating a URL reference commits a pending scrape job in the same PostgreSQL
@@ -128,14 +139,18 @@ significant-whitespace syntax fails compilation.
 
 | Environment variable | Development default | Purpose |
 | --- | --- | --- |
+| `APP_ENV` | `development` | Runtime policy; `production` rejects development secrets and relative photo storage |
 | `HTTP_HOST` | `127.0.0.1` | HTTP bind address |
 | `HTTP_PORT` | `8080` | HTTP port |
+| `HTTP_MAX_REQUEST_BYTES` | `105000000` | Whole-request limit, including a ten-photo multipart request |
 | `DATABASE_URL` | `jdbc:postgresql://localhost:5432/cooking_blog` | JDBC URL |
 | `DATABASE_USER` | `cooking_blog` | Database username |
 | `DATABASE_PASSWORD` | `cooking_blog_dev` | Database password |
+| `DATABASE_PASSWORD_FILE` | unset | Preferred file-mounted database secret; takes precedence over `DATABASE_PASSWORD` |
 | `DATABASE_POOL_SIZE` | `4` | Maximum database connections |
 | `AUTH_USERNAME` | `admin` | Dummy development login |
 | `AUTH_PASSWORD` | `test` | Dummy development password |
+| `AUTH_PASSWORD_FILE` | unset | Preferred file-mounted login secret; takes precedence over `AUTH_PASSWORD` |
 | `AUTH_SESSION_HOURS` | `24` | Absolute session lifetime |
 | `AUTH_COOKIE_SECURE` | `false` | Require HTTPS for auth cookies |
 | `PHOTO_DIRECTORY` | `./data/photos` | Persistent local photo storage |
@@ -152,5 +167,6 @@ significant-whitespace syntax fails compilation.
 | `SCRAPE_MAX_RETRY_MINUTES` | `60` | Maximum jittered retry delay |
 | `SCRAPE_USER_AGENT` | `CookingBlog/0.1 (+personal recipe archive)` | HTTP identification |
 
-All defaults are for local development only. Supply runtime secrets through the
-environment for any packaged deployment.
+All defaults are for local development only. The release overlay supplies
+secrets through read-only Compose secret files rather than embedding them in
+the image, Compose model, or ordinary environment variables.

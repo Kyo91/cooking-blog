@@ -8,7 +8,7 @@ const transparentPng = Buffer.from(
 async function signIn(page) {
   await page.goto("/login");
   await page.getByLabel("Username").fill("admin");
-  await page.getByLabel("Password").fill("test");
+  await page.getByLabel("Password").fill(process.env.AUTH_PASSWORD || "test");
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
