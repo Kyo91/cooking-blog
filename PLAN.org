@@ -56,8 +56,11 @@ cloud object storage, and more sophisticated search if they are needed later.
   soft-deletion requirements. Deleting a recipe cascades to its meals and photo
   records, and the corresponding photo files are permanently cleaned up.
 - Recipe titles are unique case-insensitively.
-- Authentication is required from the first release. Initially a dummy
-  implementation accepts username =admin= and password =test=.
+- Authentication is required from the first release. Development uses the
+  dummy =admin= / =test= credentials. The cloud release may continue to use one
+  preconfigured administrator account, but its password must come from a
+  deployment secret and the production interpreter must include login abuse
+  controls rather than exposing the development-only authenticator.
 - Login sessions have an absolute lifetime of 24 hours and are persisted in
   PostgreSQL so they survive application restarts.
 - Only the login route is public. Every HTML page, JSON endpoint, media route,
@@ -68,6 +71,14 @@ cloud object storage, and more sophisticated search if they are needed later.
   are scraped.
 - The first release is built as a Docker image and run on this laptop. A later
   release will deploy the same image to a cloud environment.
+- Local-filesystem photo storage remains supported for the simplest laptop
+  release. Cloud deployments use a private S3-compatible bucket through the
+  existing =PhotoStore= boundary. A pinned MinIO-compatible service may be used
+  for development and compatibility tests, but is not a required laptop
+  dependency or a production storage recommendation.
+- Durable scraping is optional at startup. Disabling it starts no scraper HTTP
+  client, polling fibers, or worker pool. URL references remain usable, and
+  durable pending jobs remain queued for a later startup with scraping enabled.
 - Automated backups are out of scope for the laptop phase. The later cloud
   deployment will move photos to cloud object storage and PostgreSQL backups to
   a managed third-party provider.
@@ -745,9 +756,164 @@ the session or recipe. The release runbook documents build, startup,
 observation, restart, upgrade, rollback, shutdown, secret rotation, the trusted
 interface restriction, and the explicitly accepted absence of laptop backups.
 
-The later cloud release must replace the dummy authenticator before exposure to
-an untrusted network, move photos to cloud object storage, configure managed
+The later cloud release must replace the development-named dummy authenticator
+with a production-configured single-administrator interpreter before exposure
+to an untrusted network, move photos to cloud object storage, configure managed
 PostgreSQL backups, and perform a restore rehearsal.
+
+** TODO Phase 9: Cloud-release decisions and configuration
+
+- Preserve the existing =PhotoStore= algebra and add a storage-backend selector
+  rather than introducing a second application-facing interface. Support
+  =local= and =s3= backends with typed, validated configuration.
+- Define S3 configuration for bucket, optional key prefix, region, optional
+  endpoint override, path-style addressing, credentials, connection/request
+  timeouts, and bounded concurrency. Require TLS for non-local endpoints and
+  keep the bucket private.
+- Perform a short implementation spike with =fs2-aws-s3=. It is the preferred
+  streaming adapter, but do not force it if the selected stable release cannot
+  supply the object metadata, paginated listing, readiness probe, or presigning
+  behavior required by =PhotoStore=. In that case, use the AWS SDK v2
+  =S3AsyncClient= directly behind the same algebra.
+- Keep application-proxied, authenticated =/media= responses for the first
+  cloud cutover. Evaluate short-lived presigned redirects separately if
+  measured service egress or latency justifies them; never make the bucket
+  public.
+- Add =SCRAPE_ENABLED= with an explicit default. When false, do not allocate the
+  scraper client or start worker fibers. Continue to enqueue jobs
+  transactionally so no requested import is lost; expose them as queued while
+  processing is disabled and drain them normally after re-enabling.
+- Replace =DummyCredentialsAuthenticator= in production wiring with a clearly
+  named configured-single-user interpreter. Continue constant-time credential
+  comparison, database-backed 24-hour sessions, CSRF protection, and shared
+  recipe access. Require a strong secret, secure cookies, and rate limiting or
+  bounded backoff on failed login attempts.
+- Define cloud production validation separately from laptop production:
+  =AUTH_COOKIE_SECURE=true=, an HTTPS public origin, bounded request and
+  connection pools, a non-development database secret, and a supported photo
+  backend must all be mandatory.
+
+Exit criterion: configuration tests prove that local, S3-compatible, scraper-on,
+scraper-off, laptop, and cloud profiles either assemble the intended resources
+or fail at startup with actionable errors.
+
+** TODO Phase 10: S3-compatible photo storage
+
+- Implement =S3PhotoStore= with the existing opaque layout:
+  =<prefix>/<storageKey>/<variant>.<extension>=. Upload the already processed
+  files with the correct content type and immutable cache metadata.
+- Keep uploads bounded and streaming. Since each generated variant originates
+  from a maximum 10 MB input, prefer simple object uploads unless measurement
+  shows multipart transfer is useful; if multipart is used, abort incomplete
+  uploads on cancellation and configure provider cleanup.
+- Make delete idempotent across all variants. Paginate object listings and
+  preserve the one-hour orphan grace period used by reconciliation.
+- Define readiness as a cheap bucket-access check and perform a write/read/delete
+  probe at startup or deployment verification. Distinguish missing credentials,
+  missing bucket, permission failures, timeouts, and unavailable storage in
+  logs without exposing secrets.
+- Grant the application credentials access only to the chosen bucket and prefix
+  for the minimum required get, put, delete, list, and bucket-check operations.
+  Do not use MinIO root credentials or cloud account-owner credentials.
+- Add a pinned S3-compatible service and bucket initializer to the development
+  Compose profile. Keep the existing filesystem profile so normal laptop
+  startup does not require another stateful service.
+- Run a shared =PhotoStore= contract suite against the filesystem and
+  S3-compatible interpreters. Cover all variants, metadata, overwrite
+  semantics, paginated listing, aged-orphan cleanup, partial-write
+  compensation, unavailable storage, and deletion.
+- Add opt-in provider smoke tests for AWS S3 and the selected cloud provider.
+  Verify custom endpoint, signing region, addressing style, listing, and delete
+  behavior rather than assuming complete S3 parity.
+
+Exit criterion: the unchanged photo API and browser flows pass against both
+backends, and an uploaded photo remains readable after an application restart
+with no local photo volume attached.
+
+** TODO Phase 11: Photo migration, backups, and recovery
+
+- Build an idempotent migration command that inventories database storage keys,
+  copies every local original/display/thumbnail object, verifies size and a
+  content checksum, reports missing or orphaned data, and can resume safely.
+  Provide dry-run and machine-readable summary modes.
+- Use a maintenance-window cutover for this small deployment: take a database
+  backup, stop photo writes, run the final sync and verification, switch the
+  storage backend, then exercise representative media before reopening writes.
+- Keep the old local photo volume read-only for a documented rollback window.
+  Rollback changes configuration only; do not delete source photos until the
+  cloud deployment and restore rehearsal have passed.
+- Use managed PostgreSQL backups with point-in-time recovery where the provider
+  supports it. Define retention, ownership, and a periodic export independent
+  of the application container.
+- Define object recovery separately from live deletion. UI deletion remains
+  immediate and no soft-delete model is added, but encrypted backups or bucket
+  versions may retain deleted bytes for a fixed, documented retention window
+  before permanent expiry.
+- Keep database and object recovery consistent by recording the backup
+  procedure, storage prefix, application version, and migration version
+  together. Rehearse restoring both into an isolated environment and verify
+  login, recipe search, and sampled original/display/thumbnail objects.
+- Add storage-cost and backup-failure alerts. At the expected scale, favor a
+  simple scheduled verification/export over a new in-application backup
+  subsystem.
+
+Exit criterion: all laptop photos are checksum-verified in object storage, a
+documented rollback remains available, and an isolated database-plus-photo
+restore has succeeded.
+
+** TODO Phase 12: Cloud deployment hardening
+
+- Add a cloud deployment profile for one application replica, a managed
+  PostgreSQL database, and a private S3-compatible bucket. Start with a small
+  database pool and JVM memory limit appropriate to the selected hosting tier.
+- Terminate TLS at the hosting platform, force secure cookies, and verify the
+  externally visible scheme/host behavior through the proxy. Trust forwarded
+  headers only from the platform's proxy boundary.
+- Retain default-deny application routes. Use a platform-compatible process
+  health probe without exposing authenticated health details or metrics to the
+  public internet.
+- Add bounded login-failure protection and operational recovery instructions
+  for rotating the configured admin password and invalidating existing
+  sessions. Do not add user registration, password reset email, roles, or
+  per-user ownership for this release.
+- Store database, login, and object-storage credentials only in the hosting
+  secret manager. Document rotation and ensure logs, deployment manifests,
+  diagnostic endpoints, and exception messages do not reveal them.
+- Decide how Flyway runs during deployment. With one replica it may run at
+  application startup; every migration must remain compatible with the
+  documented rollback window and a backup must precede destructive changes.
+- Configure log retention, an uptime check, database/storage availability
+  alerts, terminal scrape-job alerts only when scraping is enabled, and a
+  conservative monthly spending alert.
+- Update the production runbook for provisioning, deployment, migration,
+  observation, secret rotation, backup/restore, rollback, and provider
+  portability. Record the exact S3 features relied upon.
+
+Exit criterion: the cloud stack is HTTPS-only, uses least-privilege secrets,
+passes authenticated readiness checks, emits actionable alerts, and can be
+redeployed without losing sessions, recipes, or photos.
+
+** TODO Phase 13: Production release and cutover
+
+- Run the clean Scala/PostgreSQL suite and browser workflows with scraping both
+  enabled and disabled, then run the S3 contract suite and selected-provider
+  smoke test.
+- Test production limits and failure paths: wrong bucket credentials, storage
+  timeout, database outage, interrupted upload, failed compensation, disabled
+  scraping with queued work, login throttling, secure-cookie behavior, and
+  application restart.
+- Deploy a release candidate, import a copy of the laptop data, and soak it
+  privately before changing the primary URL. Compare recipe, meal, photo, and
+  reference counts plus representative search results.
+- Perform the maintenance-window final sync from Phase 11, deploy one pinned
+  application image, verify login/search/upload/read/delete/restart, and keep
+  the prior laptop release and image available during the rollback window.
+- After the rollback window, remove retained local photo copies according to
+  the documented retention policy and record the release baseline.
+
+Exit criterion: the primary cloud deployment has passed the full user workflow,
+restart, migration, alert, backup, and restore checks, with a tested rollback
+path and no dependency on an application-local photo volume.
 
 * Definition of Done for the MVP
 
