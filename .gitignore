@@ -1,14 +1,17 @@
 .bsp/
 .metals/
 .sbt-cache/
-.env.release
 data/
 project/project/
 project/target/
-secrets/*
 target/
 
-!secrets/README.md
+# Laptop release configuration and secret material.
+/.env.release*
+!/.env.release.example
+/secrets/**
+!/secrets/README.md
+
 /project/metals.sbt
 /.bloop/
 /.codex/
