@@ -20,6 +20,7 @@ import scalatags.Text.tags2.{article, details, main, section, summary as details
 private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormTemplates {
   protected def recipeService: RecipeApiService
   protected def transactor: Transactor[IO]
+  protected def scrapingEnabled: Boolean
 
   protected def recipeEditPage(id: RecipeId, csrfToken: String): IO[Response[IO]] =
     (recipeService.getRecipe(id), recipeKeywords(id), recipeReferences(id)).mapN {
@@ -187,7 +188,13 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
           details(detailsSummary("Imported text"), p(document.contentText))
         )
         val statusLabel =
-          if (status == "pending" || status == "running") {
+          if (!scrapingEnabled && status == "pending") {
+            span(
+              cls := "status",
+              aria.live := "polite",
+              "queued (scraping disabled)"
+            )
+          } else if (status == "pending" || status == "running") {
             span(
               cls := "status",
               aria.live := "polite",

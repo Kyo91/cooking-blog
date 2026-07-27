@@ -13,7 +13,8 @@ final class BrowserPageRoutes(
     protected val sessionManager: SessionManager[IO],
     protected val recipeService: RecipeApiService,
     protected val photoService: PhotoService,
-    protected val transactor: Transactor[IO]
+    protected val transactor: Transactor[IO],
+    protected val scrapingEnabled: Boolean = true
 ) extends BrowserPageTemplates
     with BrowserRouteSupport
     with BrowserReadRoutes

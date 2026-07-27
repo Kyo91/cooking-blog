@@ -596,10 +596,13 @@ components:
         updatedAt: { type: string, format: date-time }
     ReferenceScrapeStatus:
       type: object
-      required: [referenceId, importStatus, latestJob, document]
+      required: [referenceId, importStatus, processingEnabled, latestJob, document]
       properties:
         referenceId: { type: string, format: uuid }
         importStatus: { type: string, enum: [pending, running, failed, complete] }
+        processingEnabled:
+          type: boolean
+          description: Whether scrape workers are enabled in this application process.
         latestJob:
           oneOf:
             - { $ref: "#/components/schemas/ScrapeJob" }

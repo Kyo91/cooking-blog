@@ -39,6 +39,7 @@ final class LiveScrapeSuite extends CatsEffectSuite {
 
   private val config =
     ScrapeConfig(
+      enabled = true,
       workerCount = 1,
       perHostConcurrency = 1,
       pollInterval = 100.millis,

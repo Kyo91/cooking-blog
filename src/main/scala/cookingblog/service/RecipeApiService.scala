@@ -495,7 +495,13 @@ final class RecipeApiService(
                 case Some(ScrapeJobStatus.Failed)    => "failed"
                 case _                               => "pending"
               }
-            ReferenceScrapeStatus(reference.id, status, job, document)
+            ReferenceScrapeStatus(
+              reference.id,
+              status,
+              processingEnabled = true,
+              job,
+              document
+            )
               .asRight[ApiError]
           }
       }

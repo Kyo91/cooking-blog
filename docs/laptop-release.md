@@ -1,9 +1,10 @@
 # Laptop release runbook
 
-This release is for a single trusted laptop. It is not suitable for a LAN,
-public reverse proxy, or untrusted network while `DummyCredentialsAuthenticator`
-is in use. Compose publishes the application only on `127.0.0.1` and does not
-publish PostgreSQL.
+This release is for a single trusted laptop. Compose publishes the application
+only on `127.0.0.1` and does not publish PostgreSQL. Production wiring uses the
+configured single-user authenticator and bounded failed-login backoff, but this
+profile deliberately runs plain HTTP with non-secure cookies and therefore
+must not be exposed through a LAN or public reverse proxy.
 
 The laptop release has **no backup or restore guarantee**. The named PostgreSQL
 and photo volumes survive container replacement, but they are not backups.
@@ -26,7 +27,9 @@ cp .env.release.example .env.release
 The login username remains `admin`; `secrets/auth_password` is its release
 password. Production startup rejects the development database password,
 `admin` password `test`, login passwords shorter than 16 characters, relative
-photo paths, and unsafe request/scraper/pool limits.
+local photo paths, and unsafe request/scraper/pool limits. The release profile
+sets `DEPLOYMENT_TARGET=laptop`, `PHOTO_BACKEND=local`, and
+`SCRAPE_ENABLED=true` explicitly.
 
 Build the pinned image and start the stack:
 

@@ -311,6 +311,10 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
           Right("pending")
         )
         assertEquals(
+          pendingScrapeStatusJson.hcursor.get[Boolean]("processingEnabled"),
+          Right(true)
+        )
+        assertEquals(
           pendingScrapeStatusJson.hcursor
             .downField("latestJob")
             .get[String]("status"),
@@ -329,6 +333,58 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
         assertEquals(deletedFirst.status, Status.NoContent)
         assertEquals(deletedSecond.status, Status.NoContent)
         assertEquals(afterDelete.status, Status.NotFound)
+      }
+    }
+  }
+
+  test("scrape status reports queued work when processing is disabled") {
+    configuredTestApp(scrapingEnabled = false).use { app =>
+      val title = s"disabled-scraping-${UUID.randomUUID()}"
+      for {
+        auth <- login(app)
+        recipe <- app.run(
+          auth.request(
+            jsonRequest(
+              POST,
+              "/api/v1/recipes",
+              Json.obj("title" -> Json.fromString(title))
+            )
+          )
+        )
+        recipeJson <- recipe.as[Json]
+        recipeId <- IO.fromEither(recipeJson.hcursor.get[String]("id"))
+        reference <- app.run(
+          auth.request(
+            jsonRequest(
+              POST,
+              s"/api/v1/recipes/$recipeId/references",
+              Json.obj(
+                "kind" -> Json.fromString("url"),
+                "url" -> Json.fromString("https://example.com/queued-recipe")
+              )
+            )
+          )
+        )
+        referenceJson <- reference.as[Json]
+        referenceId <- IO.fromEither(referenceJson.hcursor.get[String]("id"))
+        status <- get(
+          app,
+          auth,
+          s"/api/v1/recipes/$recipeId/references/$referenceId/scrape"
+        )
+        statusJson <- status.as[Json]
+        _ <- delete(app, auth, s"/api/v1/recipes/$recipeId")
+      } yield {
+        assertEquals(reference.status, Status.Created)
+        assertEquals(status.status, Status.Ok)
+        assertEquals(
+          statusJson.hcursor.get[String]("importStatus"),
+          Right("pending")
+        )
+        assertEquals(
+          statusJson.hcursor.get[Boolean]("processingEnabled"),
+          Right(false)
+        )
       }
     }
   }
@@ -414,6 +470,11 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
   }
 
   private val testApp: Resource[IO, HttpApp[IO]] =
+    configuredTestApp(scrapingEnabled = true)
+
+  private def configuredTestApp(
+      scrapingEnabled: Boolean
+  ): Resource[IO, HttpApp[IO]] =
     for {
       _ <- Resource.eval(Database.migrate(databaseConfig))
       transactor <- Database.transactor(databaseConfig)
@@ -426,7 +487,16 @@ final class ApiIntegrationSuite extends CatsEffectSuite {
       cleanup = PhotoCleanup(photoStore)
       photoService = PhotoService(transactor, photoStore, cleanup)
       recipeService = RecipeApiService(transactor, cleanup)
-      http = AppHttp(credentials, manager, transactor, authConfig, photoService, recipeService)
+      http =
+        AppHttp(
+          credentials,
+          manager,
+          transactor,
+          authConfig,
+          photoService,
+          recipeService,
+          scrapingEnabled = scrapingEnabled
+        )
     } yield http.app
 
   private def login(app: HttpApp[IO]): IO[Authenticated] =

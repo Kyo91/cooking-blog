@@ -761,7 +761,7 @@ with a production-configured single-administrator interpreter before exposure
 to an untrusted network, move photos to cloud object storage, configure managed
 PostgreSQL backups, and perform a restore rehearsal.
 
-** TODO Phase 9: Cloud-release decisions and configuration
+** DONE Phase 9: Cloud-release decisions and configuration
 
 - Preserve the existing =PhotoStore= algebra and add a storage-backend selector
   rather than introducing a second application-facing interface. Support
@@ -796,6 +796,31 @@ PostgreSQL backups, and perform a restore rehearsal.
 Exit criterion: configuration tests prove that local, S3-compatible, scraper-on,
 scraper-off, laptop, and cloud profiles either assemble the intended resources
 or fail at startup with actionable errors.
+
+Implemented with typed deployment-target, local/S3 photo-store, S3 credential,
+endpoint, addressing, timeout, concurrency, and public-origin configuration.
+Laptop production preserves absolute local storage and HTTP-only loopback
+behavior; cloud production requires HTTPS origin semantics, secure cookies, a
+private S3-compatible configuration, and non-development secrets. Selecting S3
+reaches an explicit Phase 10 startup boundary rather than silently using local
+storage.
+
+=SCRAPE_ENABLED=false= allocates no scraper client, polling fiber, or worker
+pool. URL references still enqueue durable jobs, the status API exposes whether
+processing is enabled, the browser labels pending work as queued without active
+polling, and a later enabled startup drains the backlog normally.
+
+Production wiring now uses a configured single-administrator authenticator with
+constant-time comparison and bounded process-local failure backoff while
+development retains the =admin= / =test= dummy. The S3 client spike records the
+stable =fs2-aws= decision gate without adding an unused dependency: Phase 10
+must prove the complete =PhotoStore= contract before choosing the high-level
+wrapper or the AWS SDK v2 asynchronous client directly.
+
+Configuration, authentication, disabled-scraping API/browser behavior, clean
+strict compilation, all 45 Scala/PostgreSQL tests, and an actual
+=SCRAPE_ENABLED=false sbt run= startup were verified. PostgreSQL-backed suites
+now run sequentially because they deliberately share one development schema.
 
 ** TODO Phase 10: S3-compatible photo storage
 
