@@ -222,8 +222,65 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
     }
   }
 
+  test("browser labels pending imports when scraping is disabled") {
+    val title = s"disabled-browser-scraping-${System.nanoTime()}"
+    testApp(scrapingEnabled = false).use { app =>
+      for {
+        login <- app.run(
+          Request[IO](POST, uri"/login")
+            .withEntity(UrlForm("username" -> "admin", "password" -> "test"))
+        )
+        sessionCookie <- requiredCookie(login, "cooking_blog_session")
+        csrfCookie <- requiredCookie(login, "cooking_blog_csrf")
+        created <- app.run(
+          withCookies(
+            Request[IO](POST, uri"/recipes").withEntity(
+              UrlForm(
+                "csrf_token" -> csrfCookie.content,
+                "title" -> title,
+                "description" -> "",
+                "keywords" -> "",
+                "source_kind" -> "url",
+                "source_url" -> "https://example.com/queued-browser-recipe",
+                "source_citation" -> ""
+              )
+            ),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        location <- IO.fromOption(created.headers.get[headers.Location])(
+          AssertionError("Created recipe did not redirect to its detail page")
+        )
+        detail <- app.run(
+          withCookies(
+            Request[IO](GET, location.uri),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+        body <- detail.as[String]
+        deleted <- app.run(
+          withCookies(
+            Request[IO](POST, Uri.unsafeFromString(s"${location.uri.path.renderString}/delete"))
+              .withEntity(UrlForm("csrf_token" -> csrfCookie.content)),
+            sessionCookie,
+            csrfCookie
+          )
+        )
+      } yield {
+        assertEquals(created.status, Status.SeeOther)
+        assertEquals(detail.status, Status.Ok)
+        assertEquals(deleted.status, Status.SeeOther)
+        assert(body.contains("queued (scraping disabled)"))
+        assert(!body.contains("data-import-active=\"true\""))
+      }
+    }
+  }
+
   private def testApp(
-      maximumRequestBytes: Long = 105_000_000L
+      maximumRequestBytes: Long = 105_000_000L,
+      scrapingEnabled: Boolean = true
   ): Resource[IO, HttpApp[IO]] =
     for {
       _ <- Resource.eval(Database.migrate(databaseConfig))
@@ -247,7 +304,8 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
           photoService,
           recipeService,
           metrics,
-          maximumRequestBytes
+          maximumRequestBytes,
+          scrapingEnabled
         )
       migrationExists <- Resource.eval(
         sql"""

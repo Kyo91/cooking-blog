@@ -25,13 +25,21 @@ final class AppHttp(
     photoService: PhotoService,
     recipeService: RecipeApiService,
     metrics: OperationalMetrics = OperationalMetrics.noop,
-    maximumRequestBytes: Long = 105_000_000L
+    maximumRequestBytes: Long = 105_000_000L,
+    scrapingEnabled: Boolean = true
 )(using logger: Logger[IO]) {
   private val sessionCookieName = "cooking_blog_session"
   private val csrfCookieName = "cooking_blog_csrf"
-  private val apiRoutes = ApiRoutes(recipeService, photoService, sessionManager)
+  private val apiRoutes =
+    ApiRoutes(recipeService, photoService, sessionManager, scrapingEnabled)
   private val browserPages =
-    BrowserPageRoutes(sessionManager, recipeService, photoService, transactor)
+    BrowserPageRoutes(
+      sessionManager,
+      recipeService,
+      photoService,
+      transactor,
+      scrapingEnabled
+    )
   private val healthRoutes = HealthRoutes(transactor, photoService)
   private val metricsRoutes = MetricsRoutes(transactor, metrics)
   private val staticRoutes = StaticRoutes(getClass.getClassLoader)

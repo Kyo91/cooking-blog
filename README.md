@@ -74,10 +74,19 @@ variants. WebP uploads are normalized to PNG for portable pure-Java processing.
 
 ## Photo storage
 
-Photos are stored under `./data/photos` by default. Set `PHOTO_DIRECTORY` to an
-absolute path for a different laptop media directory. The directory must remain
-writable while the service runs and should live on persistent storage. Database
-records contain opaque storage keys; do not rename files within this directory.
+`PHOTO_BACKEND=local` stores photos under `./data/photos` by default. Set
+`PHOTO_DIRECTORY` to an absolute path for a different laptop media directory.
+The directory must remain writable while the service runs and should live on
+persistent storage. Database records contain opaque storage keys; do not rename
+files within this directory.
+
+Typed configuration for the forthcoming `PHOTO_BACKEND=s3` interpreter includes
+the bucket, prefix, region, endpoint override, addressing style, credential
+mode, timeouts, and concurrency. The S3 interpreter is Phase 10 work, so
+selecting it currently fails startup with an explicit message instead of
+silently falling back to local storage. See
+[`docs/s3-storage-spike.md`](docs/s3-storage-spike.md) for the Phase 9 client
+evaluation.
 
 The laptop phase deliberately has no automated photo or PostgreSQL backups.
 Deleting a photo, meal, or recipe permanently removes its photo files.
@@ -102,6 +111,12 @@ recipe search document. Pending work survives application restarts. Use
 `GET /api/v1/recipes/{recipeId}/references/{referenceId}/scrape` to read the
 latest status and imported text, and `POST` to the same path to refresh or retry
 an import.
+
+Set `SCRAPE_ENABLED=false` to save references and durable pending jobs without
+allocating the scraper HTTP client, polling fibers, or worker pool. The API
+reports `processingEnabled: false`, and the browser labels pending work as
+queued while scraping is disabled. Re-enabling scraping drains the existing
+queue normally.
 
 The scraper accepts public HTTP(S) destinations only. It resolves and rejects
 loopback, private, link-local, metadata-service, documentation, carrier-grade
@@ -140,8 +155,10 @@ significant-whitespace syntax fails compilation.
 | Environment variable | Development default | Purpose |
 | --- | --- | --- |
 | `APP_ENV` | `development` | Runtime policy; `production` rejects development secrets and relative photo storage |
+| `DEPLOYMENT_TARGET` | `laptop` | Production target; `cloud` enables HTTPS, secure-cookie, public-origin, and S3 policy |
 | `HTTP_HOST` | `127.0.0.1` | HTTP bind address |
 | `HTTP_PORT` | `8080` | HTTP port |
+| `PUBLIC_ORIGIN` | unset | External application origin; required as an HTTPS origin for cloud deployment |
 | `HTTP_MAX_REQUEST_BYTES` | `105000000` | Whole-request limit, including a ten-photo multipart request |
 | `DATABASE_URL` | `jdbc:postgresql://localhost:5432/cooking_blog` | JDBC URL |
 | `DATABASE_USER` | `cooking_blog` | Database username |
@@ -153,7 +170,21 @@ significant-whitespace syntax fails compilation.
 | `AUTH_PASSWORD_FILE` | unset | Preferred file-mounted login secret; takes precedence over `AUTH_PASSWORD` |
 | `AUTH_SESSION_HOURS` | `24` | Absolute session lifetime |
 | `AUTH_COOKIE_SECURE` | `false` | Require HTTPS for auth cookies |
+| `PHOTO_BACKEND` | `local` | Photo-store interpreter selector: `local` or the Phase 10 `s3` backend |
 | `PHOTO_DIRECTORY` | `./data/photos` | Persistent local photo storage |
+| `PHOTO_S3_BUCKET` | unset | Private S3-compatible bucket |
+| `PHOTO_S3_PREFIX` | `cooking-blog/photos` | Object-key prefix within the bucket |
+| `PHOTO_S3_REGION` | `us-east-1` | Signing region, including for custom endpoints |
+| `PHOTO_S3_ENDPOINT` | unset | Optional S3-compatible endpoint override |
+| `PHOTO_S3_PATH_STYLE` | `false` | Force path-style addressing for compatible local providers |
+| `PHOTO_S3_CREDENTIALS_MODE` | `default` | AWS default credential chain or `static` credentials |
+| `PHOTO_S3_ACCESS_KEY_ID` | unset | Access key required by static credential mode |
+| `PHOTO_S3_SECRET_ACCESS_KEY` | unset | Secret key required by static credential mode |
+| `PHOTO_S3_SECRET_ACCESS_KEY_FILE` | unset | File-mounted S3 secret key; takes precedence over the environment value |
+| `PHOTO_S3_MAX_CONCURRENCY` | `4` | Maximum concurrent object-store operations |
+| `PHOTO_S3_CONNECTION_TIMEOUT_SECONDS` | `5` | Object-store connection timeout |
+| `PHOTO_S3_REQUEST_TIMEOUT_SECONDS` | `30` | Overall object-store request timeout |
+| `SCRAPE_ENABLED` | `true` | Allocate and run durable scraping resources |
 | `SCRAPE_WORKERS` | `2` | Concurrent durable job workers |
 | `SCRAPE_PER_HOST_CONCURRENCY` | `1` | Maximum connections to one host |
 | `SCRAPE_POLL_MILLIS` | `500` | Queue polling interval |
@@ -169,4 +200,6 @@ significant-whitespace syntax fails compilation.
 
 All defaults are for local development only. The release overlay supplies
 secrets through read-only Compose secret files rather than embedding them in
-the image, Compose model, or ordinary environment variables.
+the image, Compose model, or ordinary environment variables. Production uses a
+configured single-user authenticator with constant-time comparison and bounded
+failure backoff; development retains the `admin` / `test` dummy interpreter.

@@ -20,6 +20,7 @@ services:
     image: cooking-blog:${COOKING_BLOG_VERSION:-0.1.0}
     environment:
       APP_ENV: production
+      DEPLOYMENT_TARGET: laptop
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8080
       HTTP_MAX_REQUEST_BYTES: 105000000
@@ -31,7 +32,9 @@ services:
       AUTH_PASSWORD_FILE: /run/secrets/auth_password
       AUTH_SESSION_HOURS: 24
       AUTH_COOKIE_SECURE: "false"
+      PHOTO_BACKEND: local
       PHOTO_DIRECTORY: /var/lib/cooking-blog/photos
+      SCRAPE_ENABLED: "true"
       SCRAPE_WORKERS: 2
       SCRAPE_PER_HOST_CONCURRENCY: 1
       SCRAPE_POLL_MILLIS: 500

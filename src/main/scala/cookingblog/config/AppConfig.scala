@@ -4,9 +4,10 @@ import cats.syntax.all.*
 import ciris.*
 
 import scala.concurrent.duration.*
+import java.net.URI
 import java.nio.file.{Path, Paths}
 
-final case class HttpConfig(host: String, port: Int)
+final case class HttpConfig(host: String, port: Int, publicOrigin: Option[URI])
 
 enum RuntimeEnvironment {
   case Development
@@ -14,8 +15,15 @@ enum RuntimeEnvironment {
   case Invalid(value: String)
 }
 
+enum DeploymentTarget {
+  case Laptop
+  case Cloud
+  case Invalid(value: String)
+}
+
 final case class RuntimeConfig(
     environment: RuntimeEnvironment,
+    deploymentTarget: DeploymentTarget,
     maximumRequestBytes: Long
 )
 
@@ -33,9 +41,34 @@ final case class AuthConfig(
     cookieSecure: Boolean
 )
 
-final case class PhotoConfig(directory: Path)
+sealed trait PhotoConfig
+
+final case class LocalPhotoConfig(directory: Path) extends PhotoConfig
+
+enum S3CredentialsMode {
+  case Default
+  case Static
+  case Invalid(value: String)
+}
+
+final case class S3PhotoConfig(
+    bucket: String,
+    prefix: String,
+    region: String,
+    endpoint: Option[URI],
+    pathStyleAccess: Boolean,
+    credentialsMode: S3CredentialsMode,
+    accessKeyId: String,
+    secretAccessKey: Secret[String],
+    maximumConcurrency: Int,
+    connectionTimeout: FiniteDuration,
+    requestTimeout: FiniteDuration
+) extends PhotoConfig
+
+final case class InvalidPhotoConfig(backend: String) extends PhotoConfig
 
 final case class ScrapeConfig(
+    enabled: Boolean,
     workerCount: Int,
     perHostConcurrency: Int,
     pollInterval: FiniteDuration,
@@ -82,13 +115,26 @@ object AppConfig {
           case "production"  => RuntimeEnvironment.Production
           case value         => RuntimeEnvironment.Invalid(value)
         },
+      env("DEPLOYMENT_TARGET")
+        .as[String]
+        .default("laptop")
+        .map(_.trim.toLowerCase)
+        .map {
+          case "laptop" => DeploymentTarget.Laptop
+          case "cloud"  => DeploymentTarget.Cloud
+          case value    => DeploymentTarget.Invalid(value)
+        },
       env("HTTP_MAX_REQUEST_BYTES").as[Long].default(105_000_000L)
     ).parMapN(RuntimeConfig.apply)
 
   private val http =
     (
       env("HTTP_HOST").as[String].default("127.0.0.1"),
-      env("HTTP_PORT").as[Int].default(8080)
+      env("HTTP_PORT").as[Int].default(8080),
+      env("PUBLIC_ORIGIN")
+        .as[String]
+        .default("")
+        .map(value => Option(value.trim).filter(_.nonEmpty).map(URI.create))
     ).parMapN(HttpConfig.apply)
 
   private val database =
@@ -116,13 +162,72 @@ object AppConfig {
     }
 
   private val photos =
-    env("PHOTO_DIRECTORY")
-      .as[String]
-      .default("./data/photos")
-      .map(value => PhotoConfig(Paths.get(value)))
+    (
+      env("PHOTO_BACKEND").as[String].default("local"),
+      env("PHOTO_DIRECTORY").as[String].default("./data/photos"),
+      env("PHOTO_S3_BUCKET").as[String].default(""),
+      env("PHOTO_S3_PREFIX").as[String].default("cooking-blog/photos"),
+      env("PHOTO_S3_REGION").as[String].default("us-east-1"),
+      env("PHOTO_S3_ENDPOINT")
+        .as[String]
+        .default("")
+        .map(value => Option(value.trim).filter(_.nonEmpty).map(URI.create)),
+      env("PHOTO_S3_PATH_STYLE").as[Boolean].default(false),
+      env("PHOTO_S3_CREDENTIALS_MODE").as[String].default("default"),
+      env("PHOTO_S3_ACCESS_KEY_ID").as[String].default(""),
+      secret(
+        "PHOTO_S3_SECRET_ACCESS_KEY",
+        "PHOTO_S3_SECRET_ACCESS_KEY_FILE",
+        ""
+      ),
+      env("PHOTO_S3_MAX_CONCURRENCY").as[Int].default(4),
+      env("PHOTO_S3_CONNECTION_TIMEOUT_SECONDS").as[Long].default(5L),
+      env("PHOTO_S3_REQUEST_TIMEOUT_SECONDS").as[Long].default(30L)
+    ).parMapN {
+      (
+          rawBackend,
+          directory,
+          bucket,
+          prefix,
+          region,
+          endpoint,
+          pathStyleAccess,
+          rawCredentialsMode,
+          accessKeyId,
+          secretAccessKey,
+          maximumConcurrency,
+          connectionTimeoutSeconds,
+          requestTimeoutSeconds
+      ) =>
+        rawBackend.trim.toLowerCase match {
+          case "local" => LocalPhotoConfig(Paths.get(directory))
+          case "s3"    =>
+            val credentialsMode =
+              rawCredentialsMode.trim.toLowerCase match {
+                case "default" => S3CredentialsMode.Default
+                case "static"  => S3CredentialsMode.Static
+                case value     => S3CredentialsMode.Invalid(value)
+              }
+            S3PhotoConfig(
+              bucket.trim,
+              prefix.trim.stripPrefix("/").stripSuffix("/"),
+              region.trim,
+              endpoint,
+              pathStyleAccess,
+              credentialsMode,
+              accessKeyId.trim,
+              secretAccessKey,
+              maximumConcurrency,
+              connectionTimeoutSeconds.seconds,
+              requestTimeoutSeconds.seconds
+            )
+          case value => InvalidPhotoConfig(value)
+        }
+    }
 
   private val scraping =
     (
+      env("SCRAPE_ENABLED").as[Boolean].default(true),
       env("SCRAPE_WORKERS").as[Int].default(2),
       env("SCRAPE_PER_HOST_CONCURRENCY").as[Int].default(1),
       env("SCRAPE_POLL_MILLIS").as[Long].default(500L),
@@ -139,6 +244,7 @@ object AppConfig {
         .default("CookingBlog/0.1 (+personal recipe archive)")
     ).parMapN {
       (
+          enabled,
           workerCount,
           perHostConcurrency,
           pollMillis,
@@ -153,6 +259,7 @@ object AppConfig {
           userAgent
       ) =>
         ScrapeConfig(
+          enabled,
           workerCount,
           perHostConcurrency,
           pollMillis.millis,

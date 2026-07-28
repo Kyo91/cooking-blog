@@ -227,6 +227,7 @@ final class ScrapeWorkerIntegrationSuite extends CatsEffectSuite {
 
   private val config =
     ScrapeConfig(
+      enabled = true,
       workerCount = 1,
       perHostConcurrency = 1,
       pollInterval = 10.millis,

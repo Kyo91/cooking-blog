@@ -12,4 +12,5 @@ private[http] trait BrowserPageTemplates
   protected def recipeService: RecipeApiService
   protected def photoService: PhotoService
   protected def transactor: Transactor[IO]
+  protected def scrapingEnabled: Boolean
 }

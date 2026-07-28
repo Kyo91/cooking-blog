@@ -12,6 +12,7 @@ lazy val root = project
     Compile / mainClass := Some("cookingblog.Main"),
     Compile / run / fork := true,
     Test / fork := true,
+    Test / parallelExecution := false,
     Docker / packageName := "cooking-blog",
     Docker / version := version.value,
     dockerBaseImage := "eclipse-temurin:21-jre-jammy",

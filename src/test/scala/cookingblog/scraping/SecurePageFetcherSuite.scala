@@ -91,6 +91,7 @@ final class SecurePageFetcherSuite extends CatsEffectSuite {
 
   private val config =
     ScrapeConfig(
+      enabled = true,
       workerCount = 2,
       perHostConcurrency = 1,
       pollInterval = 10.millis,

@@ -31,6 +31,7 @@ final case class RecipePage(
 final case class ReferenceScrapeStatus(
     referenceId: ReferenceId,
     importStatus: String,
+    processingEnabled: Boolean,
     latestJob: Option[ScrapeJob],
     document: Option[ScrapedDocument]
 )

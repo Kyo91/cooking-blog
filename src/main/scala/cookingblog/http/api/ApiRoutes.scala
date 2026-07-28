@@ -19,7 +19,8 @@ import org.typelevel.ci.CIString
 final class ApiRoutes(
     service: RecipeApiService,
     photoService: PhotoService,
-    sessionManager: SessionManager[IO]
+    sessionManager: SessionManager[IO],
+    scrapingEnabled: Boolean = true
 ) {
   private val csrfHeader = CIString("X-CSRF-Token")
 
@@ -175,6 +176,7 @@ final class ApiRoutes(
         withReferenceIds(rawRecipeId, rawReferenceId) { (recipeId, referenceId) =>
           service
             .getReferenceScrapeStatus(recipeId, referenceId)
+            .map(_.map(_.copy(processingEnabled = scrapingEnabled)))
             .flatMap(ok)
         }
 
