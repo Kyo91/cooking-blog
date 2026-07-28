@@ -6,7 +6,9 @@ import ciris.Secret
 import cookingblog.auth.*
 import cookingblog.config.{AuthConfig, DatabaseConfig}
 import cookingblog.database.Database
+import cookingblog.storage.PhotoExtension
 import cookingblog.storage.LocalPhotoStore
+import cookingblog.storage.StorageKey
 import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import fs2.Stream
 import io.circe.Json
@@ -192,10 +194,14 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
         assertEquals(fallbackAfterDeleteColor, Color.BLUE)
         assertEquals(storedAfterPhotoDelete.size, 1)
         assertEquals(deleteRecipe.status, Status.NoContent)
-        assertEquals(storedAfterRecipeDelete, Set.empty[String])
+        assertEquals(storedAfterRecipeDelete, Set.empty[StorageKey])
         assertNotEquals(firstPhotoId, secondPhotoId)
       }
     }
+  }
+
+  test("unsupported persisted photo content types are rejected") {
+    assertEquals(PhotoExtension.fromContentType("image/avif"), None)
   }
 
   private final case class TestContext(
@@ -237,13 +243,14 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       directory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(directory))
+      photoService = PhotoService(transactor, photoStore, PhotoCleanup(photoStore))
       http =
         AppHttp(
           credentials,
           manager,
           transactor,
           authConfig,
-          PhotoService(transactor, photoStore, PhotoCleanup(photoStore)),
+          photoService,
           RecipeApiService(transactor, PhotoCleanup(photoStore))
         )
     } yield TestContext(http.app, photoStore)

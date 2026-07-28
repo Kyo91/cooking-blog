@@ -3,6 +3,7 @@ package cookingblog.service
 import cats.effect.{Clock, IO}
 import cats.syntax.all.*
 import cookingblog.domain.*
+import cookingblog.storage.StorageKey
 import cookingblog.repository.*
 import cookingblog.service.ApiError.*
 import doobie.*
@@ -181,7 +182,7 @@ final class RecipeApiService(
     val program =
       recipes.find(id).flatMap {
         case None =>
-          NotFound("recipe").asLeft[List[String]].pure[ConnectionIO]
+          NotFound("recipe").asLeft[List[StorageKey]].pure[ConnectionIO]
         case Some(_) =>
           photos.listByRecipe(id).flatMap { storedPhotos =>
             recipes.delete(id).map { deleted =>
@@ -292,10 +293,10 @@ final class RecipeApiService(
       val program =
         meals.find(mealId).flatMap {
           case None =>
-            NotFound("meal").asLeft[List[String]].pure[ConnectionIO]
+            NotFound("meal").asLeft[List[StorageKey]].pure[ConnectionIO]
           case Some(meal) if meal.recipeId != recipeId =>
             InvalidRelationship("meal does not belong to recipe")
-              .asLeft[List[String]]
+              .asLeft[List[StorageKey]]
               .pure[ConnectionIO]
           case Some(_) =>
             photos.listByMeal(mealId).flatMap { storedPhotos =>
@@ -757,7 +758,7 @@ final class RecipeApiService(
     }
 
   private def completeDeletion(
-      result: Either[ApiError, List[String]]
+      result: Either[ApiError, List[StorageKey]]
   ): IO[Either[ApiError, Unit]] =
     result match {
       case Left(error) =>

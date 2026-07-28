@@ -23,7 +23,7 @@ final class ImageProcessorSuite extends CatsEffectSuite {
           .use { processed =>
             IO {
               assertEquals(processed.contentType, contentType)
-              assertEquals(processed.extension, extension)
+              assertEquals(processed.extension.value, extension)
               assertEquals(processed.width, width)
               assertEquals(processed.height, height)
               assertEquals(processed.files.keySet, PhotoVariant.values.toSet)

@@ -15,22 +15,47 @@ enum PhotoVariant(val filename: String) {
   case Thumbnail extends PhotoVariant("thumbnail")
 }
 
+opaque type StorageKey = String
+object StorageKey {
+  private val Pattern = raw"[a-f0-9]{32}".r
+
+  def random: StorageKey = java.util.UUID.randomUUID().toString.replace("-", "")
+  def parse(value: String): Either[String, StorageKey] =
+    Either.cond(
+      Pattern.matches(value),
+      value,
+      s"Invalid photo storage key '$value': expected 32 lower-case hexadecimal characters"
+    )
+  def value(key: StorageKey): String = key
+}
+
+enum PhotoExtension(val value: String, val contentType: String) {
+  case Jpeg extends PhotoExtension("jpg", "image/jpeg")
+  case Png extends PhotoExtension("png", "image/png")
+  case Webp extends PhotoExtension("webp", "image/webp")
+}
+
+object PhotoExtension {
+  def fromContentType(contentType: String): Option[PhotoExtension] =
+    PhotoExtension.values.find(_.contentType == contentType)
+}
+
 /** Storage boundary for immutable photo variants addressed by opaque, non-guessable keys. */
 trait PhotoStore {
   def put(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String,
+      extension: PhotoExtension,
       source: Path
   ): IO[Unit]
   def read(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String
+      extension: PhotoExtension
   ): Stream[IO, Byte]
-  def delete(storageKey: String): IO[Unit]
-  def listStorageKeys: IO[Set[String]]
-  def listStorageKeysOlderThan(cutoff: Instant): IO[Set[String]]
+  def delete(storageKey: StorageKey): IO[Unit]
+  def listStorageKeys: IO[Set[StorageKey]]
+  def listStorageKeysOlderThan(cutoff: Instant): IO[Set[StorageKey]]
   def checkWritable: IO[Boolean]
 }
 
@@ -45,9 +70,9 @@ object PhotoStore {
 
 final class LocalPhotoStore private (root: Path) extends PhotoStore {
   override def put(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String,
+      extension: PhotoExtension,
       source: Path
   ): IO[Unit] =
     IO.blocking {
@@ -82,13 +107,13 @@ final class LocalPhotoStore private (root: Path) extends PhotoStore {
     }
 
   override def read(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String
+      extension: PhotoExtension
   ): Stream[IO, Byte] =
     Fs2Files[IO].readAll(Fs2Path.fromNioPath(fileFor(storageKey, variant, extension)))
 
-  override def delete(storageKey: String): IO[Unit] =
+  override def delete(storageKey: StorageKey): IO[Unit] =
     IO.blocking {
       val directory = directoryFor(storageKey)
       if (Files.exists(directory)) {
@@ -105,13 +130,13 @@ final class LocalPhotoStore private (root: Path) extends PhotoStore {
       }
     }
 
-  override def listStorageKeys: IO[Set[String]] =
+  override def listStorageKeys: IO[Set[StorageKey]] =
     listDirectories(_ => true)
 
-  override def listStorageKeysOlderThan(cutoff: Instant): IO[Set[String]] =
+  override def listStorageKeysOlderThan(cutoff: Instant): IO[Set[StorageKey]] =
     listDirectories(path => Files.getLastModifiedTime(path).toInstant.isBefore(cutoff))
 
-  private def listDirectories(include: Path => Boolean): IO[Set[String]] =
+  private def listDirectories(include: Path => Boolean): IO[Set[StorageKey]] =
     IO.blocking {
       if (!Files.exists(root)) {
         Set.empty
@@ -123,8 +148,7 @@ final class LocalPhotoStore private (root: Path) extends PhotoStore {
             .asScala
             .filter(Files.isDirectory(_))
             .filter(include)
-            .map(_.getFileName.toString)
-            .filter(LocalPhotoStore.isValidStorageKey)
+            .flatMap(path => StorageKey.parse(path.getFileName.toString).toOption)
             .toSet
         } finally {
           stream.close()
@@ -140,38 +164,21 @@ final class LocalPhotoStore private (root: Path) extends PhotoStore {
     }.attempt
       .map(_.isRight)
 
-  private def directoryFor(storageKey: String): Path = {
-    require(
-      LocalPhotoStore.isValidStorageKey(storageKey),
-      "Invalid photo storage key"
-    )
-    root.resolve(storageKey)
-  }
+  private def directoryFor(storageKey: StorageKey): Path =
+    root.resolve(StorageKey.value(storageKey))
 
   private def fileFor(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String
-  ): Path = {
-    require(
-      LocalPhotoStore.ValidExtension.matches(extension),
-      "Invalid photo extension"
-    )
-    directoryFor(storageKey).resolve(s"${variant.filename}.$extension")
-  }
+      extension: PhotoExtension
+  ): Path = directoryFor(storageKey).resolve(s"${variant.filename}.${extension.value}")
 }
 
 object LocalPhotoStore {
-  private[storage] val ValidStorageKey = raw"[a-f0-9]{32}".r
-  private[storage] val ValidExtension = raw"(jpg|png|webp)".r
-
   def create(root: Path): IO[LocalPhotoStore] =
     IO.blocking {
       val normalized = root.toAbsolutePath.normalize()
       val _ = Files.createDirectories(normalized)
       new LocalPhotoStore(normalized)
     }
-
-  private[storage] def isValidStorageKey(value: String): Boolean =
-    ValidStorageKey.matches(value)
 }

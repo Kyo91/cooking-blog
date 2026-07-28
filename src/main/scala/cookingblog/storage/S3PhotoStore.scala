@@ -27,9 +27,9 @@ final class S3PhotoStore private (
     operations: Semaphore[IO]
 ) extends PhotoStore {
   override def put(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String,
+      extension: PhotoExtension,
       source: Path
   ): IO[Unit] =
     withOperation {
@@ -38,7 +38,7 @@ final class S3PhotoStore private (
           .builder()
           .bucket(config.bucket)
           .key(objectKey(storageKey, variant, extension))
-          .contentType(contentType(extension))
+          .contentType(extension.contentType)
           .cacheControl("public, max-age=31536000, immutable")
           .build()
       IO.fromCompletableFuture(
@@ -47,9 +47,9 @@ final class S3PhotoStore private (
     }
 
   override def read(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String
+      extension: PhotoExtension
   ): Stream[IO, Byte] =
     Stream.resource(Resource.make(operations.acquire)(_ => operations.release)).flatMap { _ =>
       val request =
@@ -69,7 +69,7 @@ final class S3PhotoStore private (
         .flatMap(bytes => Stream.emits(bytes.asByteArray()).covary[IO])
     }
 
-  override def delete(storageKey: String): IO[Unit] =
+  override def delete(storageKey: StorageKey): IO[Unit] =
     listObjects(prefixFor(storageKey)).flatMap { objects =>
       objects
         .map(_.key())
@@ -94,10 +94,10 @@ final class S3PhotoStore private (
         )
     }
 
-  override def listStorageKeys: IO[Set[String]] =
+  override def listStorageKeys: IO[Set[StorageKey]] =
     listObjects(rootPrefix).map(objects => storageKeys(objects).keySet)
 
-  override def listStorageKeysOlderThan(cutoff: Instant): IO[Set[String]] =
+  override def listStorageKeysOlderThan(cutoff: Instant): IO[Set[StorageKey]] =
     listObjects(rootPrefix).map { objects =>
       storageKeys(objects).collect {
         case (storageKey, latestModified) if latestModified.isBefore(cutoff) => storageKey
@@ -130,8 +130,8 @@ final class S3PhotoStore private (
     next(None, Nil)
   }
 
-  private def storageKeys(objects: List[S3Object]): Map[String, Instant] =
-    objects.foldLeft(Map.empty[String, Instant]) { (keys, objectSummary) =>
+  private def storageKeys(objects: List[S3Object]): Map[StorageKey, Instant] =
+    objects.foldLeft(Map.empty[StorageKey, Instant]) { (keys, objectSummary) =>
       storageKeyFromObjectKey(objectSummary.key()).fold(keys) { storageKey =>
         val modified = objectSummary.lastModified()
         keys.updatedWith(storageKey) {
@@ -141,35 +141,21 @@ final class S3PhotoStore private (
       }
     }
 
-  private def storageKeyFromObjectKey(key: String): Option[String] = {
+  private def storageKeyFromObjectKey(key: String): Option[StorageKey] = {
     val withoutPrefix = key.stripPrefix(rootPrefix)
-    withoutPrefix.split("/", 2).headOption.filter(LocalPhotoStore.isValidStorageKey)
+    withoutPrefix.split("/", 2).headOption.flatMap(StorageKey.parse(_).toOption)
   }
 
   private def objectKey(
-      storageKey: String,
+      storageKey: StorageKey,
       variant: PhotoVariant,
-      extension: String
-  ): String = {
-    require(LocalPhotoStore.isValidStorageKey(storageKey), "Invalid photo storage key")
-    require(LocalPhotoStore.ValidExtension.matches(extension), "Invalid photo extension")
-    s"${prefixFor(storageKey)}${variant.filename}.$extension"
-  }
+      extension: PhotoExtension
+  ): String = s"${prefixFor(storageKey)}${variant.filename}.${extension.value}"
 
-  private def prefixFor(storageKey: String): String = {
-    require(LocalPhotoStore.isValidStorageKey(storageKey), "Invalid photo storage key")
-    s"$rootPrefix$storageKey/"
-  }
+  private def prefixFor(storageKey: StorageKey): String =
+    s"$rootPrefix${StorageKey.value(storageKey)}/"
 
   private val rootPrefix = Option(config.prefix).filter(_.nonEmpty).fold("")(_ + "/")
-
-  private def contentType(extension: String): String =
-    extension match {
-      case "jpg"  => "image/jpeg"
-      case "png"  => "image/png"
-      case "webp" => "image/webp"
-      case _      => throw IllegalArgumentException("Invalid photo extension")
-    }
 
   private def withOperation[A](operation: IO[A]): IO[A] = operations.permit.use(_ => operation)
 }
