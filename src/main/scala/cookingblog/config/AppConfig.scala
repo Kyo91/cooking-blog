@@ -14,13 +14,11 @@ final case class HttpConfig(host: String, port: Int, publicOrigin: Option[URI])
 enum RuntimeEnvironment {
   case Development
   case Production
-  case Invalid(value: String)
 }
 
 enum DeploymentTarget {
   case Laptop
   case Cloud
-  case Invalid(value: String)
 }
 
 final case class RuntimeConfig(
@@ -50,7 +48,6 @@ final case class LocalPhotoConfig(directory: Path) extends PhotoConfig
 enum S3CredentialsMode {
   case Default
   case Static
-  case Invalid(value: String)
 }
 
 final case class S3PhotoConfig(
@@ -66,8 +63,6 @@ final case class S3PhotoConfig(
     connectionTimeout: FiniteDuration,
     requestTimeout: FiniteDuration
 ) extends PhotoConfig
-
-final case class InvalidPhotoConfig(backend: String) extends PhotoConfig
 
 final case class ScrapeConfig(
     enabled: Boolean,
@@ -111,23 +106,20 @@ object AppConfig {
       env("APP_ENV")
         .as[String]
         .default("development")
-        .map(_.trim.toLowerCase)
-        .map {
-          case "development" => RuntimeEnvironment.Development
-          case "production"  => RuntimeEnvironment.Production
-          case value         => RuntimeEnvironment.Invalid(value)
-        },
+        .map(_.trim.toLowerCase),
       env("DEPLOYMENT_TARGET")
         .as[String]
         .default("laptop")
-        .map(_.trim.toLowerCase)
-        .map {
-          case "laptop" => DeploymentTarget.Laptop
-          case "cloud"  => DeploymentTarget.Cloud
-          case value    => DeploymentTarget.Invalid(value)
-        },
+        .map(_.trim.toLowerCase),
       env("HTTP_MAX_REQUEST_BYTES").as[Long].default(105_000_000L)
-    ).parMapN(RuntimeConfig.apply)
+    ).parMapN { (environment, deploymentTarget, maximumRequestBytes) =>
+      (
+        parseEnvironment(environment),
+        parseDeploymentTarget(deploymentTarget)
+      ).mapN((parsedEnvironment, parsedDeploymentTarget) =>
+        RuntimeConfig(parsedEnvironment, parsedDeploymentTarget, maximumRequestBytes)
+      )
+    }
 
   private val http =
     (
@@ -202,28 +194,24 @@ object AppConfig {
           requestTimeoutSeconds
       ) =>
         rawBackend.trim.toLowerCase match {
-          case "local" => LocalPhotoConfig(Paths.get(directory))
+          case "local" => LocalPhotoConfig(Paths.get(directory)).validNec
           case "s3"    =>
-            val credentialsMode =
-              rawCredentialsMode.trim.toLowerCase match {
-                case "default" => S3CredentialsMode.Default
-                case "static"  => S3CredentialsMode.Static
-                case value     => S3CredentialsMode.Invalid(value)
-              }
-            S3PhotoConfig(
-              bucket.trim,
-              prefix.trim.stripPrefix("/").stripSuffix("/"),
-              region.trim,
-              endpoint,
-              pathStyleAccess,
-              credentialsMode,
-              accessKeyId.trim,
-              secretAccessKey,
-              maximumConcurrency,
-              connectionTimeoutSeconds.seconds,
-              requestTimeoutSeconds.seconds
+            parseCredentialsMode(rawCredentialsMode).map(credentialsMode =>
+              S3PhotoConfig(
+                bucket.trim,
+                prefix.trim.stripPrefix("/").stripSuffix("/"),
+                region.trim,
+                endpoint,
+                pathStyleAccess,
+                credentialsMode,
+                accessKeyId.trim,
+                secretAccessKey,
+                maximumConcurrency,
+                connectionTimeoutSeconds.seconds,
+                requestTimeoutSeconds.seconds
+              )
             )
-          case value => InvalidPhotoConfig(value)
+          case value => s"PHOTO_BACKEND must be local or s3 (was $value)".invalidNec
         }
     }
 
@@ -277,15 +265,20 @@ object AppConfig {
         )
     }
 
-  private val values: ConfigValue[Effect, AppConfig] =
-    (runtime, http, database, auth, photos, scraping).parMapN(AppConfig.apply)
+  private val values: ConfigValue[Effect, ValidatedNec[String, AppConfig]] =
+    (runtime, http, database, auth, photos, scraping).parMapN {
+      (parsedRuntime, http, database, auth, parsedPhotos, scraping) =>
+        (parsedRuntime, parsedPhotos).mapN((runtime, photos) =>
+          AppConfig(runtime, http, database, auth, photos, scraping)
+        )
+    }
 
   /** Parses environment configuration into an application configuration that satisfies all runtime
     * invariants. Invalid external input never reaches resource assembly.
     */
   def load: IO[ValidatedNec[String, AppConfig]] =
     values.load[IO].attempt.map {
-      case Right(config) => parse(config)
+      case Right(config) => config.andThen(parse)
       case Left(error)   => error.getMessage.invalidNec[AppConfig]
     }
 
@@ -296,12 +289,6 @@ object AppConfig {
       case _                           => None
     }
     val generalErrors = List(
-      Option.when(config.runtime.environment.isInstanceOf[RuntimeEnvironment.Invalid])(
-        "APP_ENV must be development or production"
-      ),
-      Option.when(config.runtime.deploymentTarget.isInstanceOf[DeploymentTarget.Invalid])(
-        "DEPLOYMENT_TARGET must be laptop or cloud"
-      ),
       Option.when(cloudDeployment && config.runtime.environment != RuntimeEnvironment.Production)(
         "DEPLOYMENT_TARGET=cloud requires APP_ENV=production"
       ),
@@ -393,9 +380,8 @@ object AppConfig {
       ).flatten
     } else Nil
     val photoErrors = config.photos match {
-      case InvalidPhotoConfig(_) => List("PHOTO_BACKEND must be local or s3")
-      case _: LocalPhotoConfig   => Nil
-      case s3: S3PhotoConfig     =>
+      case _: LocalPhotoConfig => Nil
+      case s3: S3PhotoConfig   =>
         List(
           Option.when(s3.bucket.isEmpty)("PHOTO_S3_BUCKET must not be blank"),
           Option.when(s3.region.isEmpty)("PHOTO_S3_REGION must not be blank"),
@@ -407,9 +393,6 @@ object AppConfig {
           ),
           Option.when(cloudDeployment && s3.endpoint.exists(_.getScheme != "https"))(
             "PHOTO_S3_ENDPOINT must use HTTPS for cloud deployments"
-          ),
-          Option.when(s3.credentialsMode.isInstanceOf[S3CredentialsMode.Invalid])(
-            "PHOTO_S3_CREDENTIALS_MODE must be default or static"
           ),
           Option.when(s3.credentialsMode == S3CredentialsMode.Static && s3.accessKeyId.isEmpty)(
             "PHOTO_S3_ACCESS_KEY_ID must not be blank for static credentials"
@@ -444,4 +427,25 @@ object AppConfig {
       Option(endpoint.getHost).exists(_.nonEmpty) && Option(endpoint.getUserInfo).isEmpty &&
       Option(endpoint.getQuery).isEmpty && Option(endpoint.getFragment).isEmpty &&
       Set("", "/").contains(Option(endpoint.getPath).getOrElse(""))
+
+  private def parseEnvironment(value: String): ValidatedNec[String, RuntimeEnvironment] =
+    value match {
+      case "development" => RuntimeEnvironment.Development.validNec
+      case "production"  => RuntimeEnvironment.Production.validNec
+      case other         => s"APP_ENV must be development or production (was $other)".invalidNec
+    }
+
+  private def parseDeploymentTarget(value: String): ValidatedNec[String, DeploymentTarget] =
+    value match {
+      case "laptop" => DeploymentTarget.Laptop.validNec
+      case "cloud"  => DeploymentTarget.Cloud.validNec
+      case other    => s"DEPLOYMENT_TARGET must be laptop or cloud (was $other)".invalidNec
+    }
+
+  private def parseCredentialsMode(value: String): ValidatedNec[String, S3CredentialsMode] =
+    value.trim.toLowerCase match {
+      case "default" => S3CredentialsMode.Default.validNec
+      case "static"  => S3CredentialsMode.Static.validNec
+      case other => s"PHOTO_S3_CREDENTIALS_MODE must be default or static (was $other)".invalidNec
+    }
 }

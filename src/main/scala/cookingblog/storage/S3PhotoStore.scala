@@ -209,8 +209,6 @@ object S3PhotoStore {
               AwsBasicCredentials.create(config.accessKeyId, config.secretAccessKey.value)
             )
           )
-        case S3CredentialsMode.Invalid(_) =>
-          throw IllegalArgumentException("Invalid S3 credentials mode")
       }
       builder.build()
     }

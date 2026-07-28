@@ -1,7 +1,7 @@
 package cookingblog.storage
 
 import cats.effect.{IO, Resource}
-import cookingblog.config.{InvalidPhotoConfig, LocalPhotoConfig, PhotoConfig, S3PhotoConfig}
+import cookingblog.config.{LocalPhotoConfig, PhotoConfig, S3PhotoConfig}
 import fs2.Stream
 import fs2.io.file.{Files as Fs2Files, Path as Fs2Path}
 
@@ -39,13 +39,7 @@ object PhotoStore {
     config match {
       case LocalPhotoConfig(directory) =>
         Resource.eval(LocalPhotoStore.create(directory))
-      case s3: S3PhotoConfig           => S3PhotoStore.create(s3)
-      case InvalidPhotoConfig(backend) =>
-        Resource.eval(
-          IO.raiseError[PhotoStore](
-            IllegalStateException(s"Unsupported photo backend: $backend")
-          )
-        )
+      case s3: S3PhotoConfig => S3PhotoStore.create(s3)
     }
 }
 

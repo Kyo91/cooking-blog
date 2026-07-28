@@ -97,7 +97,5 @@ object Main extends IOApp.Simple {
         IO.pure(DummyCredentialsAuthenticator[IO](config.auth))
       case RuntimeEnvironment.Production =>
         ConfiguredCredentialsAuthenticator.create[IO](config.auth)
-      case RuntimeEnvironment.Invalid(_) =>
-        IO.raiseError(IllegalStateException("Invalid runtime environment"))
     }
 }
