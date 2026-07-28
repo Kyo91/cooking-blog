@@ -39,19 +39,22 @@ final class RecipeApiService(
   private val MaxKeywordLength = 100
   private val MaxKeywords = 50
 
+  private final case class CreateRecipeCommand(
+      title: String,
+      description: String,
+      keywords: List[String]
+  )
+  private final case class CreateMealCommand(notes: String, cookedAt: Instant)
+
   /** Validates a new recipe and atomically creates its keyword and search projections. */
   def createRecipe(input: CreateRecipeInput): IO[Either[ApiError, Recipe]] =
-    continue(
-      validateRecipe(input.title, input.description.getOrElse("")).flatMap { recipe =>
-        validateKeywords(input.keywords.getOrElse("")).map((recipe, _).mapN((_, _)))
-      }
-    ) { case ((title, description), recipeKeywords) =>
+    continue(parseCreateRecipe(input)) { command =>
       now.flatMap { timestamp =>
         val recipe =
           Recipe(
             RecipeId.random,
-            title,
-            description,
+            command.title,
+            command.description,
             None,
             timestamp,
             timestamp,
@@ -59,7 +62,7 @@ final class RecipeApiService(
           )
         transact(
           recipes.create(recipe) *>
-            keywords.replace(recipe.id, recipeKeywords) *>
+            keywords.replace(recipe.id, command.keywords) *>
             searchDocuments.rebuildSearchDocument(recipe.id, timestamp)
         )
           .as(recipe)
@@ -199,16 +202,14 @@ final class RecipeApiService(
       recipeId: RecipeId,
       input: CreateMealInput
   ): IO[Either[ApiError, Meal]] =
-    continue(
-      validateText("notes", input.notes.getOrElse(""), MaxNotesLength)
-    ) { notes =>
+    continue(parseCreateMeal(input)) { command =>
       now.flatMap { timestamp =>
         val meal =
           Meal(
             MealId.random,
             recipeId,
-            notes,
-            input.cookedAt,
+            command.notes,
+            command.cookedAt,
             timestamp,
             timestamp
           )
@@ -514,6 +515,23 @@ final class RecipeApiService(
       citation: Option[String],
       displayName: Option[String]
   )
+
+  private def parseCreateRecipe(
+      input: CreateRecipeInput
+  ): IO[Either[ApiError, CreateRecipeCommand]] =
+    validateRecipe(input.title, input.description.getOrElse("")).flatMap { recipe =>
+      validateKeywords(input.keywords.getOrElse("")).map { recipeKeywords =>
+        (recipe, recipeKeywords).mapN { case ((title, description), keywords) =>
+          CreateRecipeCommand(title, description, keywords)
+        }
+      }
+    }
+
+  private def parseCreateMeal(
+      input: CreateMealInput
+  ): IO[Either[ApiError, CreateMealCommand]] =
+    validateText("notes", input.notes.getOrElse(""), MaxNotesLength)
+      .map(_.map(notes => CreateMealCommand(notes, input.cookedAt)))
 
   private def validateRecipe(
       rawTitle: String,
