@@ -1,6 +1,7 @@
 package cookingblog.storage
 
-import cats.effect.IO
+import cats.effect.{IO, Resource}
+import cookingblog.config.{InvalidPhotoConfig, LocalPhotoConfig, PhotoConfig, S3PhotoConfig}
 import fs2.Stream
 import fs2.io.file.{Files as Fs2Files, Path as Fs2Path}
 
@@ -31,6 +32,21 @@ trait PhotoStore {
   def listStorageKeys: IO[Set[String]]
   def listStorageKeysOlderThan(cutoff: Instant): IO[Set[String]]
   def checkWritable: IO[Boolean]
+}
+
+object PhotoStore {
+  def create(config: PhotoConfig): Resource[IO, PhotoStore] =
+    config match {
+      case LocalPhotoConfig(directory) =>
+        Resource.eval(LocalPhotoStore.create(directory))
+      case s3: S3PhotoConfig           => S3PhotoStore.create(s3)
+      case InvalidPhotoConfig(backend) =>
+        Resource.eval(
+          IO.raiseError[PhotoStore](
+            IllegalStateException(s"Unsupported photo backend: $backend")
+          )
+        )
+    }
 }
 
 final class LocalPhotoStore private (root: Path) extends PhotoStore {
@@ -152,8 +168,8 @@ final class LocalPhotoStore private (root: Path) extends PhotoStore {
 }
 
 object LocalPhotoStore {
-  private val ValidStorageKey = raw"[a-f0-9]{32}".r
-  private val ValidExtension = raw"(jpg|png|webp)".r
+  private[storage] val ValidStorageKey = raw"[a-f0-9]{32}".r
+  private[storage] val ValidExtension = raw"(jpg|png|webp)".r
 
   def create(root: Path): IO[LocalPhotoStore] =
     IO.blocking {
