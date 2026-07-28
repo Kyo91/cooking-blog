@@ -2,6 +2,7 @@ package cookingblog.repository
 
 import cats.syntax.all.*
 import cookingblog.domain.*
+import cookingblog.storage.StorageKey
 import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
@@ -36,7 +37,7 @@ trait PhotoRepository[F[_]] {
   def delete(id: PhotoId): F[Boolean]
   def listByMeal(mealId: MealId): F[List[Photo]]
   def listByRecipe(recipeId: RecipeId): F[List[Photo]]
-  def listStorageKeys: F[List[String]]
+  def listStorageKeys: F[List[StorageKey]]
   def findPrimaryForRecipe(recipeId: RecipeId): F[Option[Photo]]
 }
 
@@ -199,20 +200,32 @@ private object RepositoryMapping {
       row.updatedAt
     )
 
-  def photo(row: PhotoRow): Photo =
-    Photo(
-      PhotoId(row.id),
-      MealId(row.mealId),
-      row.storageKey,
-      row.originalFilename,
-      row.contentType,
-      row.byteSize,
-      row.width,
-      row.height,
-      row.comment,
-      row.createdAt,
-      row.updatedAt
-    )
+  def photo(row: PhotoRow): Either[IllegalStateException, Photo] =
+    StorageKey
+      .parse(row.storageKey)
+      .left
+      .map(invalidStorageKey)
+      .map(storageKey =>
+        Photo(
+          PhotoId(row.id),
+          MealId(row.mealId),
+          storageKey,
+          row.originalFilename,
+          row.contentType,
+          row.byteSize,
+          row.width,
+          row.height,
+          row.comment,
+          row.createdAt,
+          row.updatedAt
+        )
+      )
+
+  def storageKey(value: String): Either[IllegalStateException, StorageKey] =
+    StorageKey.parse(value).left.map(invalidStorageKey)
+
+  private def invalidStorageKey(message: String): IllegalStateException =
+    IllegalStateException(s"Invalid photos.storage_key: $message")
 
   def reference(row: ReferenceRow): RecipeReference = {
     RecipeReference(
@@ -380,7 +393,7 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
       ) values (
         ${PhotoId.value(photo.id)},
         ${MealId.value(photo.mealId)},
-        ${photo.storageKey},
+        ${StorageKey.value(photo.storageKey)},
         ${photo.originalFilename},
         ${photo.contentType},
         ${photo.byteSize},
@@ -398,13 +411,13 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
              width, height, comment, created_at, updated_at
       from photos
       where id = ${PhotoId.value(id)}
-    """.query[PhotoRow].option.map(_.map(photo))
+    """.query[PhotoRow].option.flatMap(_.traverse(photo).liftTo[ConnectionIO])
 
   override def update(photo: Photo): ConnectionIO[Boolean] =
     sql"""
       update photos
       set meal_id = ${MealId.value(photo.mealId)},
-          storage_key = ${photo.storageKey},
+          storage_key = ${StorageKey.value(photo.storageKey)},
           original_filename = ${photo.originalFilename},
           content_type = ${photo.contentType},
           byte_size = ${photo.byteSize},
@@ -425,7 +438,7 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
       from photos
       where meal_id = ${MealId.value(mealId)}
       order by created_at, id
-    """.query[PhotoRow].to[List].map(_.map(photo))
+    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
 
   override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[Photo]] =
     sql"""
@@ -435,10 +448,13 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
       join meals m on m.id = p.meal_id
       where m.recipe_id = ${RecipeId.value(recipeId)}
       order by m.cooked_at desc, p.created_at desc, p.id
-    """.query[PhotoRow].to[List].map(_.map(photo))
+    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
 
-  override def listStorageKeys: ConnectionIO[List[String]] =
-    sql"select storage_key from photos".query[String].to[List]
+  override def listStorageKeys: ConnectionIO[List[StorageKey]] =
+    sql"select storage_key from photos"
+      .query[String]
+      .to[List]
+      .flatMap(_.traverse(storageKey).liftTo[ConnectionIO])
 
   override def findPrimaryForRecipe(
       recipeId: RecipeId
@@ -455,7 +471,7 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
                p.created_at desc,
                p.id
       limit 1
-    """.query[PhotoRow].option.map(_.map(photo))
+    """.query[PhotoRow].option.flatMap(_.traverse(photo).liftTo[ConnectionIO])
 }
 
 private object DoobieRecipeReferenceRepository extends RecipeReferenceRepository[ConnectionIO] {

@@ -34,6 +34,8 @@ lazy val root = project
       "-Werror"
     ),
     libraryDependencies ++= Seq(
+      awsNettyNioClient,
+      awsS3,
       catsEffect,
       ciris,
       circeCore,

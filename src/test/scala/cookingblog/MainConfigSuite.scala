@@ -1,5 +1,7 @@
 package cookingblog
 
+import cats.effect.IO
+import cats.data.Validated
 import ciris.Secret
 import cookingblog.config.*
 import munit.CatsEffectSuite
@@ -11,7 +13,7 @@ import scala.concurrent.duration.*
 final class MainConfigSuite extends CatsEffectSuite {
   test("production rejects development credentials") {
     interceptIO[IllegalArgumentException](
-      Main.validateConfig(configuration("cooking_blog_dev", "test"))
+      validate(configuration("cooking_blog_dev", "test"))
     ).map { error =>
       assert(error.getMessage.contains("DATABASE_PASSWORD"))
       assert(error.getMessage.contains("AUTH_PASSWORD"))
@@ -19,7 +21,7 @@ final class MainConfigSuite extends CatsEffectSuite {
   }
 
   test("laptop production accepts local photos and file-supplied release credentials") {
-    Main.validateConfig(
+    validate(
       configuration(
         "a-database-password-that-is-not-development",
         "a-unique-release-password"
@@ -33,13 +35,13 @@ final class MainConfigSuite extends CatsEffectSuite {
         "a-database-password-that-is-not-development",
         "a-unique-release-password"
       ).copy(photos = LocalPhotoConfig(Paths.get("./relative/photos")))
-    interceptIO[IllegalArgumentException](Main.validateConfig(config)).map(error =>
+    interceptIO[IllegalArgumentException](validate(config)).map(error =>
       assert(error.getMessage.contains("PHOTO_DIRECTORY"))
     )
   }
 
   test("cloud production accepts private S3-compatible storage configuration") {
-    Main.validateConfig(cloudConfiguration)
+    validate(cloudConfiguration)
   }
 
   test("cloud production requires HTTPS, secure cookies, and S3 photos") {
@@ -59,10 +61,31 @@ final class MainConfigSuite extends CatsEffectSuite {
           Some(URI.create("http://recipes.example.com"))
         )
       )
-    interceptIO[IllegalArgumentException](Main.validateConfig(config)).map { error =>
+    interceptIO[IllegalArgumentException](validate(config)).map { error =>
       assert(error.getMessage.contains("AUTH_COOKIE_SECURE"))
       assert(error.getMessage.contains("PUBLIC_ORIGIN"))
       assert(error.getMessage.contains("PHOTO_BACKEND"))
+    }
+  }
+
+  test("configuration parsing accumulates independent errors") {
+    val invalid =
+      configuration("cooking_blog_dev", "test").copy(
+        runtime = RuntimeConfig(
+          RuntimeEnvironment.Production,
+          DeploymentTarget.Cloud,
+          maximumRequestBytes = 1L
+        )
+      )
+    AppConfig.parse(invalid) match {
+      case Validated.Invalid(errors) =>
+        val messages = errors.toNonEmptyList.toList
+        assert(messages.exists(_.contains("HTTP_MAX_REQUEST_BYTES")))
+        assert(messages.exists(_.contains("DATABASE_PASSWORD")))
+        assert(messages.exists(_.contains("AUTH_PASSWORD")))
+        assert(messages.exists(_.contains("AUTH_COOKIE_SECURE")))
+        assert(messages.exists(_.contains("PHOTO_BACKEND")))
+      case Validated.Valid(_) => fail("expected invalid configuration")
     }
   }
 
@@ -76,7 +99,7 @@ final class MainConfigSuite extends CatsEffectSuite {
           secretAccessKey = Secret("")
         )
       )
-    interceptIO[IllegalArgumentException](Main.validateConfig(invalid)).map { error =>
+    interceptIO[IllegalArgumentException](validate(invalid)).map { error =>
       assert(error.getMessage.contains("PHOTO_S3_ENDPOINT"))
       assert(error.getMessage.contains("PHOTO_S3_ACCESS_KEY_ID"))
       assert(error.getMessage.contains("PHOTO_S3_SECRET_ACCESS_KEY"))
@@ -96,7 +119,7 @@ final class MainConfigSuite extends CatsEffectSuite {
           maximumAttempts = 0
         )
       )
-    Main.validateConfig(disabled)
+    validate(disabled)
   }
 
   private def configuration(
@@ -120,6 +143,15 @@ final class MainConfigSuite extends CatsEffectSuite {
       LocalPhotoConfig(Paths.get("/var/lib/cooking-blog/photos")),
       scrapeConfig
     )
+
+  private def validate(config: AppConfig): IO[Unit] =
+    AppConfig
+      .parse(config)
+      .fold(
+        errors =>
+          IO.raiseError(IllegalArgumentException(errors.toNonEmptyList.toList.mkString("; "))),
+        _ => IO.unit
+      )
 
   private val scrapeConfig =
     ScrapeConfig(

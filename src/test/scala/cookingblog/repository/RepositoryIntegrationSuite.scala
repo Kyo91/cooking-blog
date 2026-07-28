@@ -7,6 +7,7 @@ import cookingblog.config.DatabaseConfig
 import cookingblog.database.Database
 import cookingblog.domain.*
 import cookingblog.service.PersistenceService
+import cookingblog.storage.StorageKey
 import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
@@ -62,6 +63,46 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
     }
   }
 
+  test("photo repository rejects invalid storage keys from database rows") {
+    database.use { transactor =>
+      val recipeId = RecipeId.random
+      val mealId = MealId.random
+      val photoId = PhotoId.random
+      val timestamp = Instant.now()
+      val invalidStorageKey = s"invalid-${PhotoId.value(photoId)}"
+      val program =
+        for {
+          _ <- DoobieRepositories.recipes.create(
+            Recipe(
+              recipeId,
+              s"Invalid photo key ${PhotoId.value(photoId)}",
+              "",
+              None,
+              timestamp,
+              timestamp,
+              None
+            )
+          )
+          _ <- DoobieRepositories.meals.create(
+            Meal(mealId, recipeId, "", timestamp, timestamp, timestamp)
+          )
+          _ <- sql"""
+            insert into photos (
+              id, meal_id, storage_key, original_filename, content_type, byte_size,
+              width, height, comment, created_at, updated_at
+            ) values (
+              ${PhotoId.value(photoId)}, ${MealId.value(mealId)}, $invalidStorageKey,
+              'photo.png', 'image/png', 1, null, null, null, $timestamp, $timestamp
+            )
+          """.update.run
+          result <- DoobieRepositories.photos.find(photoId).attempt
+        } yield result
+      program.transact(transactor).map { result =>
+        assert(result.left.exists(_.getMessage.startsWith("Invalid photos.storage_key:")))
+      }
+    }
+  }
+
   test("DAO interpreters support CRUD for every Phase 2 table") {
     database.use { transactor =>
       val recipeId = RecipeId.random
@@ -87,7 +128,7 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
         Photo(
           photoId,
           mealId,
-          s"test/$titleSuffix.webp",
+          StorageKey.random,
           "dinner.webp",
           "image/webp",
           128,
@@ -382,7 +423,7 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
         Photo(
           PhotoId.random,
           mealId,
-          s"oversized/$suffix.jpg",
+          StorageKey.random,
           "oversized.jpg",
           "image/jpeg",
           10000001,

@@ -32,12 +32,14 @@ paginated listing, bucket checks, or presigning:
 
 <https://github.com/laserdisc-io/fs2-aws>
 
-The library is built over the AWS SDK v2 asynchronous client. Phase 10 should
-prototype one complete `PhotoStore` contract test using stable `fs2-aws-s3`.
-Use it if its interpreter exposes the necessary generated SDK operations and
-allows resource-safe metadata-rich streaming. Otherwise use the AWS SDK v2
-`S3AsyncClient` directly behind `PhotoStore`; do not combine two overlapping
-client abstractions merely to retain the `fs2-aws` name.
+The library is built over the AWS SDK v2 asynchronous client. Phase 10 selected
+the AWS SDK v2 `S3AsyncClient` directly, pinned at `2.49.4` after the Metals
+dependency lookup. This keeps the client surface small while supporting
+metadata-rich writes, paginated listings, bucket checks, endpoint overrides,
+signing regions, and path-style addressing without mixing two overlapping S3
+abstractions. Generated variants are streamed from temporary files on upload;
+the authenticated proxy response currently buffers one already-bounded variant
+through the SDK response transformer.
 
 Custom endpoints still require a signing region. Addressing style must be
 configurable because AWS SDK v2 normally uses virtual-hosted addressing with an

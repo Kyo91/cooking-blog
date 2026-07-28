@@ -17,7 +17,7 @@ import scala.util.control.NonFatal
 
 final case class ProcessedPhoto(
     contentType: String,
-    extension: String,
+    extension: PhotoExtension,
     uploadedByteSize: Long,
     width: Int,
     height: Int,
@@ -277,7 +277,7 @@ final class ImageProcessor(
       variant: PhotoVariant,
       format: ImageFormat
   ): IO[Path] = {
-    val target = directory.resolve(s"${variant.filename}.${format.extension}")
+    val target = directory.resolve(s"${variant.filename}.${format.extension.value}")
     val writable =
       if (format == ImageFormat.Jpeg && source.getColorModel.hasAlpha) {
         val rgb = BufferedImage(
@@ -352,10 +352,10 @@ object ImageProcessor {
 
   private[storage] enum ImageFormat(
       val contentType: String,
-      val extension: String,
+      val extension: PhotoExtension,
       val writerName: String
   ) {
-    case Jpeg extends ImageFormat("image/jpeg", "jpg", "jpeg")
-    case Png extends ImageFormat("image/png", "png", "png")
+    case Jpeg extends ImageFormat("image/jpeg", PhotoExtension.Jpeg, "jpeg")
+    case Png extends ImageFormat("image/png", PhotoExtension.Png, "png")
   }
 }

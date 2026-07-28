@@ -2,6 +2,7 @@ package cookingblog.http.api
 
 import cookingblog.domain.*
 import cookingblog.service.*
+import cookingblog.storage.StorageKey
 import io.circe.*
 import io.circe.generic.semiauto.*
 
@@ -24,6 +25,8 @@ object ApiJson {
     Encoder.encodeString.contramap(id => ReferenceId.value(id).toString)
   given Encoder[PhotoId] =
     Encoder.encodeString.contramap(id => PhotoId.value(id).toString)
+  given Encoder[StorageKey] =
+    Encoder.encodeString.contramap(StorageKey.value)
   given Encoder[ScrapeJobId] =
     Encoder.encodeString.contramap(id => ScrapeJobId.value(id).toString)
   given Encoder[ScrapedDocumentId] =

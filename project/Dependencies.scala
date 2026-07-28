@@ -1,6 +1,7 @@
 import sbt.*
 
 object Dependencies {
+  private val awsSdkVersion = "2.49.4"
   private val catsEffectVersion = "3.7.0"
   private val circeVersion = "0.14.15"
   private val cirisVersion = "3.10.0"
@@ -40,6 +41,9 @@ object Dependencies {
   val scalaTags = "com.lihaoyi" %% "scalatags" % scalaTagsVersion
   val webpImageIo =
     "com.twelvemonkeys.imageio" % "imageio-webp" % webpImageIoVersion
+  val awsS3 = "software.amazon.awssdk" % "s3" % awsSdkVersion
+  val awsNettyNioClient =
+    "software.amazon.awssdk" % "netty-nio-client" % awsSdkVersion
   val munitCatsEffect =
     "org.typelevel" %% "munit-cats-effect" % munitCatsEffectVersion
 }

@@ -1,5 +1,7 @@
 package cookingblog.domain
 
+import cookingblog.storage.StorageKey
+
 import java.time.Instant
 import java.util.UUID
 import scala.util.Try
@@ -105,7 +107,7 @@ final case class Meal(
 final case class Photo(
     id: PhotoId,
     mealId: MealId,
-    storageKey: String,
+    storageKey: StorageKey,
     originalFilename: String,
     contentType: String,
     byteSize: Long,

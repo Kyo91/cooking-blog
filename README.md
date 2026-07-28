@@ -80,13 +80,32 @@ The directory must remain writable while the service runs and should live on
 persistent storage. Database records contain opaque storage keys; do not rename
 files within this directory.
 
-Typed configuration for the forthcoming `PHOTO_BACKEND=s3` interpreter includes
+`PHOTO_BACKEND=s3` uses the AWS SDK v2 asynchronous client with S3-compatible
+endpoints. It retains the opaque layout
+`<prefix>/<storageKey>/<variant>.<extension>`, streams generated files from
+disk during upload, serves authenticated media through the application, and
+uses paginated listings for orphan reconciliation. Configuration includes
 the bucket, prefix, region, endpoint override, addressing style, credential
-mode, timeouts, and concurrency. The S3 interpreter is Phase 10 work, so
-selecting it currently fails startup with an explicit message instead of
-silently falling back to local storage. See
-[`docs/s3-storage-spike.md`](docs/s3-storage-spike.md) for the Phase 9 client
-evaluation.
+mode, timeouts, and concurrency. See
+[`docs/s3-storage-spike.md`](docs/s3-storage-spike.md) for the client decision.
+
+Start the opt-in local S3-compatible profile with:
+
+```sh
+docker compose --profile s3 up -d --wait minio
+docker compose --profile s3 run --rm minio-bucket-init
+```
+
+It exposes MinIO only on loopback and creates the development-only
+`cooking-blog-photos` bucket plus an application credential. Run the shared
+storage contract against it with:
+
+```sh
+S3_TEST_ENDPOINT=http://127.0.0.1:9000 \
+  S3_TEST_ACCESS_KEY_ID=cooking-blog \
+  S3_TEST_SECRET_ACCESS_KEY=cooking-blog-dev-secret \
+  sbt "testOnly cookingblog.storage.PhotoStoreContractSuite"
+```
 
 The laptop phase deliberately has no automated photo or PostgreSQL backups.
 Deleting a photo, meal, or recipe permanently removes its photo files.

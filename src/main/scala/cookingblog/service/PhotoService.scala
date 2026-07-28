@@ -13,7 +13,6 @@ import fs2.Stream
 
 import java.nio.file.Paths
 import java.time.Instant
-import java.util.UUID
 import scala.concurrent.duration.*
 import scala.util.control.NonFatal
 
@@ -128,7 +127,7 @@ final class PhotoService(
   ): IO[Either[ApiError, Unit]] = {
     val program =
       findRelated(recipeId, mealId, photoId).flatMap {
-        case Left(error)  => error.asLeft[(String, Unit)].pure[ConnectionIO]
+        case Left(error)  => error.asLeft[(StorageKey, Unit)].pure[ConnectionIO]
         case Right(photo) =>
           photos
             .delete(photo.id)
@@ -145,34 +144,26 @@ final class PhotoService(
       photoId: PhotoId,
       variant: PhotoVariant
   ): IO[Either[ApiError, PhotoMedia]] =
-    photos.find(photoId).transact(transactor).map {
-      _.toRight(NotFound("photo")).map(photo =>
-        PhotoMedia(
-          photo,
-          photoStore.read(
-            photo.storageKey,
-            variant,
-            extensionFor(photo.contentType)
-          )
-        )
-      )
+    photos.find(photoId).transact(transactor).map { storedPhoto =>
+      for {
+        photo <- storedPhoto.toRight(NotFound("photo"))
+        extension <- PhotoExtension
+          .fromContentType(photo.contentType)
+          .toRight(UnavailableDependency("Photo metadata has an unsupported content type"))
+      } yield PhotoMedia(photo, photoStore.read(photo.storageKey, variant, extension))
     }
 
   def recipePrimaryMedia(
       recipeId: RecipeId,
       variant: PhotoVariant
   ): IO[Either[ApiError, PhotoMedia]] =
-    photos.findPrimaryForRecipe(recipeId).transact(transactor).map {
-      _.toRight(NotFound("photo")).map(photo =>
-        PhotoMedia(
-          photo,
-          photoStore.read(
-            photo.storageKey,
-            variant,
-            extensionFor(photo.contentType)
-          )
-        )
-      )
+    photos.findPrimaryForRecipe(recipeId).transact(transactor).map { storedPhoto =>
+      for {
+        photo <- storedPhoto.toRight(NotFound("photo"))
+        extension <- PhotoExtension
+          .fromContentType(photo.contentType)
+          .toRight(UnavailableDependency("Photo metadata has an unsupported content type"))
+      } yield PhotoMedia(photo, photoStore.read(photo.storageKey, variant, extension))
     }
 
   /** Deletes only aged store objects that have no database reference, avoiding active upload races.
@@ -198,7 +189,7 @@ final class PhotoService(
       comment: Option[String],
       processed: ProcessedPhoto
   ): IO[Either[ApiError, Photo]] = {
-    val storageKey = UUID.randomUUID().toString.replace("-", "")
+    val storageKey = StorageKey.random
     val writeObjects =
       PhotoVariant.values.toList.traverse_(variant =>
         photoStore.put(
@@ -309,14 +300,6 @@ final class PhotoService(
       base.filter(character => !character.isControl).trim.take(MaxFilenameLength)
     if (sanitized.isEmpty) "photo" else sanitized
   }
-
-  private def extensionFor(contentType: String): String =
-    contentType match {
-      case "image/jpeg" => "jpg"
-      case "image/png"  => "png"
-      case "image/webp" => "webp"
-      case other        => throw IllegalStateException(s"Unsupported stored type: $other")
-    }
 
   private def now: IO[Instant] = Clock[IO].realTimeInstant
 
