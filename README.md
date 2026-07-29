@@ -121,6 +121,15 @@ See [`docs/laptop-release.md`](docs/laptop-release.md) for secret creation,
 deployment, health and metrics checks, logs, restart, upgrade, rollback, and
 shutdown commands.
 
+## Railway public test deployment
+
+The application can run as one public Railway service with Railway PostgreSQL
+and a private Railway Bucket for photos. It requires HTTPS, secure cookies, a
+configured administrator secret, and `PHOTO_BACKEND=s3`; do not reuse the
+laptop Compose configuration for this deployment. See
+[`docs/railway-release.md`](docs/railway-release.md) for resource provisioning,
+variable references, and the authenticated verification workflow.
+
 ## Recipe imports
 
 Creating a URL reference commits a pending scrape job in the same PostgreSQL

@@ -397,6 +397,11 @@ If browser-side form state, uploads, and live updates become materially more
 complex, evaluate Scala.js as the next frontend boundary; do not introduce it
 until that complexity justifies its build and maintenance cost.
 
+Action item from Railway staging validation (2026-07-29): fix the recipe/meal
+edit date-time parsing path. Entering =07/27/2026, 08:00 PM= in the browser
+picker was rejected with =must be a date and time=. Preserve timezone-aware
+=cooked_at= semantics and add browser plus API coverage for the picker format.
+
 The =+= link should encode the current query as a parameter such as
 =/recipes/new?title=grilled%20chicken= and the server must still validate it.
 
