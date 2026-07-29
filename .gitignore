@@ -7,6 +7,10 @@ project/target/
 target/
 
 # Laptop release configuration and secret material.
+/.env
+/.env.*
+!/.env.example
+!/.env.*.example
 /.env.release*
 !/.env.release.example
 /secrets/**
