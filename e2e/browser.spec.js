@@ -25,6 +25,7 @@ test("search query carries into the new recipe form", async ({ page }) => {
 
   await page.locator("#recipe-search").fill("browser test recipe");
   await expect(page).toHaveURL(/q=browser%20test%20recipe/);
+  await expect(page.getByRole("link", { name: "Add recipe" })).toHaveAttribute("href", /title=browser%20test%20recipe/);
   await page.locator("#new-recipe").click();
   await expect(page.getByLabel("Title")).toHaveValue("browser test recipe");
 });
@@ -47,9 +48,24 @@ test("phone viewport keeps primary controls reachable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page);
   await expect(page.locator("#recipe-search")).toBeVisible();
-  await expect(page.locator("#new-recipe")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Add recipe" })).toBeVisible();
+  await expect(page.locator("#new-recipe")).toHaveCSS("min-height", "44px");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBeFalsy();
+});
+
+test("a recipe card is one mobile tap target", async ({ page }) => {
+  const title = `Browser card ${Date.now()}`;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  await createRecipe(page, title);
+  await page.goto("/");
+
+  const card = page.locator(".recipe-card").filter({ hasText: title });
+  const link = card.getByRole("link", { name: title });
+  await expect(link).toHaveAttribute("href", /\/recipes\//);
+  await link.click();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
 });
 
 test("URL sources show an asynchronous import state", async ({ page }) => {
