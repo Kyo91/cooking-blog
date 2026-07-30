@@ -27,54 +27,75 @@ private[templates] trait BrowserHomeTemplates extends BrowserTemplateSupport {
             nav(session),
             main(
               div(
-                cls := "page-heading",
-                div(h1("Recipes"), p("Find something you have made, then capture the next time.")),
-                a(
-                  cls := "button primary",
-                  htmlId := "new-recipe",
-                  href := "/recipes/new",
-                  aria.label := "Create a new recipe",
-                  "+"
+                cls := "home-intro",
+                div(
+                  cls := "eyebrow",
+                  "Recipe journal"
+                ),
+                div(
+                  cls := "page-heading",
+                  div(
+                    h1("Recipes"),
+                    p("Find something you have made, then capture the next time.")
+                  ),
+                  a(
+                    cls := "icon-button add-recipe",
+                    htmlId := "new-recipe",
+                    href := "/recipes/new",
+                    aria.label := "Add recipe",
+                    span(aria.hidden := "true", "+")
+                  )
                 )
               ),
-              label(`for` := "recipe-search", "Search recipes"),
-              input(
-                htmlId := "recipe-search",
-                name := "q",
-                tpe := "search",
-                value := query,
-                placeholder := "grilled chicken, weeknight, sous vide",
-                autocomplete := "off",
-                attr("hx-get") := "/recipes/search",
-                attr("hx-trigger") := "input changed delay:250ms",
-                attr("hx-target") := "#recipe-results",
-                attr("hx-swap") := "innerHTML",
-                attr("hx-include") := "#recipe-sort",
-                autofocus
-              ),
-              label(`for` := "recipe-sort", "Order recipes by"),
-              select(
-                htmlId := "recipe-sort",
-                name := "sort",
-                attr("hx-get") := "/recipes/search",
-                attr("hx-trigger") := "change",
-                attr("hx-target") := "#recipe-results",
-                attr("hx-swap") := "innerHTML",
-                attr("hx-include") := "#recipe-search",
-                option(
-                  value := RecipeSort.Recent.value,
-                  selected := (sort == RecipeSort.Recent),
-                  "Most recently cooked"
+              div(
+                cls := "recipe-search-controls",
+                span(
+                  cls := "search-glyph",
+                  aria.hidden := "true",
+                  "⌕"
                 ),
-                option(
-                  value := RecipeSort.Updated.value,
-                  selected := (sort == RecipeSort.Updated),
-                  "Last updated"
+                label(cls := "sr-only", `for` := "recipe-search", "Search recipes"),
+                input(
+                  htmlId := "recipe-search",
+                  name := "q",
+                  tpe := "search",
+                  value := query,
+                  placeholder := "Search your recipes",
+                  autocomplete := "off",
+                  attr("hx-get") := "/recipes/search",
+                  attr("hx-trigger") := "input changed delay:250ms",
+                  attr("hx-target") := "#recipe-results",
+                  attr("hx-swap") := "innerHTML",
+                  attr("hx-include") := "#recipe-sort",
+                  autofocus
                 ),
-                option(
-                  value := RecipeSort.Title.value,
-                  selected := (sort == RecipeSort.Title),
-                  "Title"
+                div(
+                  cls := "sort-control",
+                  label(cls := "sr-only", `for` := "recipe-sort", "Order recipes by"),
+                  select(
+                    htmlId := "recipe-sort",
+                    name := "sort",
+                    attr("hx-get") := "/recipes/search",
+                    attr("hx-trigger") := "change",
+                    attr("hx-target") := "#recipe-results",
+                    attr("hx-swap") := "innerHTML",
+                    attr("hx-include") := "#recipe-search",
+                    option(
+                      value := RecipeSort.Recent.value,
+                      selected := (sort == RecipeSort.Recent),
+                      "Most recently cooked"
+                    ),
+                    option(
+                      value := RecipeSort.Updated.value,
+                      selected := (sort == RecipeSort.Updated),
+                      "Last updated"
+                    ),
+                    option(
+                      value := RecipeSort.Title.value,
+                      selected := (sort == RecipeSort.Title),
+                      "Title"
+                    )
+                  )
                 )
               ),
               p(htmlId := "search-status", cls := "muted", aria.live := "polite"),
@@ -98,11 +119,11 @@ private[templates] trait BrowserHomeTemplates extends BrowserTemplateSupport {
       div(
         cls := "empty-state",
         htmlH2("No recipes found"),
-        p("Try another phrase, or start a recipe with this search."),
+        p("Try another phrase, or add a recipe to your journal."),
         a(
           cls := "button primary",
           href := s"/recipes/new?title=${url(query)}",
-          s"Create “${query.trim}”"
+          "Add recipe"
         )
       )
     } else {

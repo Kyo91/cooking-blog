@@ -12,6 +12,8 @@ final class StaticRoutes(classLoader: ClassLoader) {
       asset("public/htmx.min.js", MediaType.application.javascript)
     case GET -> Root / "static" / "app-v1.js" =>
       asset("public/app-v1.js", MediaType.application.javascript)
+    case GET -> Root / "static" / "app-v1.css" =>
+      asset("public/app-v1.css", MediaType.text.css)
   }
 
   private def asset(resource: String, mediaType: MediaType): IO[Response[IO]] =
