@@ -861,6 +861,22 @@ now run sequentially because they deliberately share one development schema.
   to a client-side framework or Scala.js for this work; use native controls and
   the existing small browser asset for the limited interaction that remains.
 
+Current progress (2026-07-30): Part 1, design foundation and home page, is
+implemented. The former inline browser stylesheet is now the authenticated
+=app-v1.css= asset, with reusable parchment/ink/herb/terracotta visual tokens,
+responsive control and card patterns, visible focus states, reduced-motion
+handling, and 44-pixel icon-control sizing. The home page has an icon-first,
+programmatically named add-recipe action; search queries prepopulate its form
+target both on initial server rendering and during live search without becoming
+the button label. Recipe cards use a mobile-friendly two-column grid and are
+each a single semantic link, so the photo and all card content open the recipe
+without nested interactive controls. The empty state retains query
+prepopulation while using the stable label =Add recipe=.
+
+ScalaFmt and all 52 Scala/PostgreSQL tests pass. Six Playwright workflows pass,
+including 390-pixel mobile checks for the add-control target, no horizontal
+overflow, active-query prepopulation, and whole-card recipe navigation.
+
 Exit criterion: the home, recipe-detail, meal, and photo workflows are
 comfortable and legible on a phone without text wrapping or crowded action
 rows, and users can download an authenticated original photo in one action.

@@ -41,7 +41,7 @@ private[templates] trait BrowserHomeTemplates extends BrowserTemplateSupport {
                   a(
                     cls := "icon-button add-recipe",
                     htmlId := "new-recipe",
-                    href := "/recipes/new",
+                    href := s"/recipes/new?title=${url(query)}",
                     aria.label := "Add recipe",
                     span(aria.hidden := "true", "+")
                   )
@@ -130,17 +130,21 @@ private[templates] trait BrowserHomeTemplates extends BrowserTemplateSupport {
       frag(recipes.map { recipe =>
         article(
           cls := "recipe-card",
-          img(
-            src := s"/media/recipes/${id(recipe.id)}/primary?variant=thumbnail",
-            alt := "",
-            attr("loading") := "lazy"
-          ),
-          div(
-            htmlH2(a(href := s"/recipes/${id(recipe.id)}", recipe.title)),
-            p(summary(recipe.description)),
-            p(
-              cls := "muted",
-              recipe.lastMadeAt.fold("Not cooked yet")(instant => s"Last made ${date(instant)}")
+          a(
+            cls := "recipe-card-link",
+            href := s"/recipes/${id(recipe.id)}",
+            img(
+              src := s"/media/recipes/${id(recipe.id)}/primary?variant=thumbnail",
+              alt := "",
+              attr("loading") := "lazy"
+            ),
+            div(
+              htmlH2(recipe.title),
+              p(summary(recipe.description)),
+              p(
+                cls := "muted",
+                recipe.lastMadeAt.fold("Not cooked yet")(instant => s"Last made ${date(instant)}")
+              )
             )
           )
         )

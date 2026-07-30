@@ -54,6 +54,20 @@ test("phone viewport keeps primary controls reachable", async ({ page }) => {
   expect(overflow).toBeFalsy();
 });
 
+test("a recipe card is one mobile tap target", async ({ page }) => {
+  const title = `Browser card ${Date.now()}`;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  await createRecipe(page, title);
+  await page.goto("/");
+
+  const card = page.locator(".recipe-card").filter({ hasText: title });
+  const link = card.getByRole("link", { name: title });
+  await expect(link).toHaveAttribute("href", /\/recipes\//);
+  await link.click();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+});
+
 test("URL sources show an asynchronous import state", async ({ page }) => {
   const title = `Browser import ${Date.now()}`;
   await signIn(page);
