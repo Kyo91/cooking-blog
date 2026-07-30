@@ -33,6 +33,49 @@ private[templates] trait BrowserTemplateSupport {
       button(cls := "danger", tpe := "submit", labelText)
     )
 
+  protected def actionTray(actions: Frag*): Frag =
+    div(cls := "action-tray", actions)
+
+  protected def iconActionLink(
+      hrefValue: String,
+      accessibleName: String,
+      icon: String,
+      primary: Boolean = false
+  ): Frag =
+    a(
+      cls := s"icon-action${if (primary) " primary-action" else ""}",
+      href := hrefValue,
+      aria.label := accessibleName,
+      attr("title") := accessibleName,
+      span(cls := "action-glyph", aria.hidden := "true", icon),
+      span(cls := "sr-only", accessibleName)
+    )
+
+  protected def iconActionForm(
+      actionUrl: String,
+      csrfToken: String,
+      accessibleName: String,
+      icon: String,
+      confirmation: Option[String] = None,
+      primary: Boolean = false
+  ): Frag =
+    form(
+      method := "post",
+      action := actionUrl,
+      cls := (if (confirmation.nonEmpty) "icon-action-form confirmation-form"
+              else "icon-action-form"),
+      confirmation.fold(frag())(message => attr("data-confirm") := message),
+      input(tpe := "hidden", name := "csrf_token", value := csrfToken),
+      button(
+        cls := s"icon-action${if (primary) " primary-action" else ""}",
+        tpe := "submit",
+        aria.label := accessibleName,
+        attr("title") := accessibleName,
+        span(cls := "action-glyph", aria.hidden := "true", icon),
+        span(cls := "sr-only", accessibleName)
+      )
+    )
+
   protected def nav(session: AuthenticatedSession): Frag = header(
     a(cls := "brand", href := "/", "Cooking Blog"),
     form(

@@ -405,6 +405,12 @@ picker was rejected with =must be a date and time=. Preserve timezone-aware
 The =+= link should encode the current query as a parameter such as
 =/recipes/new?title=grilled%20chicken= and the server must still validate it.
 
+Deferred UI follow-up from staging review (2026-07-30): collapse the
+rarely-used add/edit-source interface on the recipe detail page behind a compact
+disclosure or explicit add-source action, while keeping source status visible.
+On mobile, adjust recipe-description typography so it forms a more deliberate,
+neatly justified reading column without harming readability or accessibility.
+
 * Background Scraping
 
 ** Processing flow
@@ -861,8 +867,7 @@ now run sequentially because they deliberately share one development schema.
   to a client-side framework or Scala.js for this work; use native controls and
   the existing small browser asset for the limited interaction that remains.
 
-Current progress (2026-07-30): Part 1, design foundation and home page, is
-implemented. The former inline browser stylesheet is now the authenticated
+Current progress (2026-07-30): Parts 1 and 2 are implemented. The former inline browser stylesheet is now the authenticated
 =app-v1.css= asset, with reusable parchment/ink/herb/terracotta visual tokens,
 responsive control and card patterns, visible focus states, reduced-motion
 handling, and 44-pixel icon-control sizing. The home page has an icon-first,
@@ -873,9 +878,16 @@ each a single semantic link, so the photo and all card content open the recipe
 without nested interactive controls. The empty state retains query
 prepopulation while using the stable label =Add recipe=.
 
-ScalaFmt and all 52 Scala/PostgreSQL tests pass. Six Playwright workflows pass,
-including 390-pixel mobile checks for the add-control target, no horizontal
-overflow, active-query prepopulation, and whole-card recipe navigation.
+Recipe, source, meal, and photo actions now use reusable ScalaTags icon-action
+and action-tray helpers. They retain explicit accessible names and confirmations
+for permanent deletion, while photo captions and source edits use compact
+associated editors. Long recipe titles wrap rather than crowd controls on a
+phone.
+
+ScalaFmt and all 52 Scala/PostgreSQL tests pass. Seven Playwright workflows
+pass, including 390-pixel mobile checks for action targets, no horizontal
+overflow, active-query prepopulation, whole-card recipe navigation, and
+item-associated recipe-history actions.
 
 Exit criterion: the home, recipe-detail, meal, and photo workflows are
 comfortable and legible on a phone without text wrapping or crowded action
@@ -1024,6 +1036,28 @@ path and no dependency on an application-local photo volume.
 
 Exit criterion: a user can intentionally share a scoped recipe or meal link,
 revoke it immediately, and no unrelated application resource becomes public.
+
+** TODO Phase 16: Book-source image OCR and assisted recipe transcription
+
+- Let a user optionally attach one or more book-page images when creating or
+  editing a book reference, with the same authenticated upload, size, media,
+  and permanent-deletion guarantees as meal photos.
+- Store book-source image metadata through a dedicated relationship rather than
+  treating it as a meal photo. Keep private images behind the existing
+  authentication boundary.
+- Process transcription asynchronously and durably. Use OCR to extract text,
+  then evaluate an optional LLM-assisted step for turning the transcription
+  into a reviewable recipe/ingredient/instruction draft; never silently replace
+  user-authored recipe content.
+- Define provider, cost, retention, prompt-data privacy, failure/retry, and
+  human-review policies before enabling external AI processing. Preserve the
+  raw OCR text and show processing state plus errors in the book-source UI.
+- Add unit, integration, and browser coverage for image upload, authorization,
+  OCR job durability, failure/retry, draft review, and deletion cleanup.
+
+Exit criterion: an authenticated user can attach book-page photos to a book
+source, receive a durable reviewed transcription draft, and safely keep, edit,
+or discard it without exposing the images or changing the original recipe.
 
 * Definition of Done for the MVP
 
