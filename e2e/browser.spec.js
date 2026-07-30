@@ -75,7 +75,7 @@ test("URL sources show an asynchronous import state", async ({ page }) => {
   await page.getByLabel("Add a source").selectOption("url");
   await page.locator("#reference-url").fill("https://example.com/");
   await page.getByRole("button", { name: "Add source" }).click();
-  await expect(page.locator(".reference .status")).toContainText(/pending|running|complete|failed/);
+  await expect(page.locator(".reference .status")).toContainText(/queued|pending|running|complete|failed/);
 });
 
 test("meal photo upload supports caption, primary selection, and deletion", async ({ page }) => {
@@ -91,11 +91,11 @@ test("meal photo upload supports caption, primary selection, and deletion", asyn
   });
   await expect(page.locator("#photo-previews img")).toHaveCount(1);
   await page.getByRole("button", { name: "Save cooking entry" }).click();
-  await expect(page.getByLabel("Caption")).toBeVisible();
+  await expect(page.getByLabel("Photo caption")).toBeVisible();
 
-  await page.getByLabel("Caption").fill("Dinner photo");
+  await page.getByLabel("Photo caption").fill("Dinner photo");
   await page.getByRole("button", { name: "Save caption" }).click();
-  await expect(page.getByLabel("Caption")).toHaveValue("Dinner photo");
+  await expect(page.getByLabel("Photo caption")).toHaveValue("Dinner photo");
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Use as primary" }).click();
@@ -103,5 +103,28 @@ test("meal photo upload supports caption, primary selection, and deletion", asyn
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete photo" }).click();
-  await expect(page.getByLabel("Caption")).toHaveCount(0);
+  await expect(page.getByLabel("Photo caption")).toHaveCount(0);
+});
+
+test("recipe history groups icon actions with their meal and photo", async ({ page }) => {
+  const title = `Browser actions ${Date.now()}`;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  await createRecipe(page, title);
+  await page.getByRole("link", { name: "Record meal" }).click();
+  await page.locator("#photos").setInputFiles({
+    name: "actions.png",
+    mimeType: "image/png",
+    buffer: transparentPng
+  });
+  await page.getByRole("button", { name: "Save cooking entry" }).click();
+
+  const meal = page.locator(".meal");
+  await expect(meal.getByRole("link", { name: "Edit cooking entry" })).toBeVisible();
+  await expect(meal.getByRole("button", { name: "Delete cooking entry" })).toBeVisible();
+  await expect(meal.getByRole("button", { name: "Use as primary photo" })).toBeVisible();
+  await expect(meal.getByRole("button", { name: "Delete photo" })).toBeVisible();
+  await expect(meal.getByRole("button", { name: "Save caption" })).toHaveCSS("min-height", "44px");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  expect(overflow).toBeFalsy();
 });

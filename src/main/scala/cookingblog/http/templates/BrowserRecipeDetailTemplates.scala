@@ -100,19 +100,20 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
         div(
           cls := "detail-heading",
           div(h1(recipe.title), p(recipe.description), keywords),
-          div(
-            cls := "actions",
-            a(cls := "button", href := s"/recipes/${id(recipe.id)}/edit", "Edit recipe"),
-            a(
-              cls := "button primary",
-              href := s"/recipes/${id(recipe.id)}/meals/new",
-              "Record meal"
+          actionTray(
+            iconActionLink(s"/recipes/${id(recipe.id)}/edit", "Edit recipe", "✎"),
+            iconActionLink(
+              s"/recipes/${id(recipe.id)}/meals/new",
+              "Record meal",
+              "+",
+              primary = true
             ),
-            confirmationForm(
+            iconActionForm(
               s"/recipes/${id(recipe.id)}/delete",
               csrfToken,
-              "Permanently delete this recipe and all of its cooking history?",
-              "Delete recipe"
+              "Delete recipe",
+              "×",
+              confirmation = Some("Permanently delete this recipe and all of its cooking history?")
             )
           )
         ),
@@ -211,7 +212,20 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
     }
     val endpoint = s"/recipes/${id(recipeId)}/references/${id(reference.id)}"
     val retry = Option.when(reference.kind == ReferenceKind.Url)(
-      confirmationForm(s"$endpoint/scrape", csrfToken, "Retry this import now?", "Retry import")
+      iconActionForm(
+        s"$endpoint/scrape",
+        csrfToken,
+        "Retry import",
+        "↻",
+        confirmation = Some("Retry this import now?")
+      )
+    )
+    val delete = iconActionForm(
+      s"$endpoint/delete",
+      csrfToken,
+      "Delete source",
+      "×",
+      confirmation = Some("Permanently delete this source?")
     )
     val field = reference.kind match {
       case ReferenceKind.Url =>
@@ -234,14 +248,16 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
     }
     article(
       cls := "reference",
-      h3(displayLabel),
-      importInfo,
+      div(cls := "item-heading", h3(displayLabel), actionTray((retry.toSeq :+ delete)*)),
+      div(cls := "reference-status", importInfo),
       form(
         method := "post",
         action := endpoint,
+        cls := "compact-editor",
         attr("data-html-form") := "true",
         input(tpe := "hidden", name := "csrf_token", scalatags.Text.attrs.value := csrfToken),
         label(
+          cls := "sr-only",
           `for` := s"reference-${id(reference.id)}",
           if (reference.kind == ReferenceKind.Url) "Recipe URL" else "Book citation"
         ),
@@ -252,14 +268,14 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
           aria.live := "polite",
           role := "alert"
         ),
-        button(tpe := "submit", "Save source")
-      ),
-      retry,
-      confirmationForm(
-        s"$endpoint/delete",
-        csrfToken,
-        "Permanently delete this source?",
-        "Delete source"
+        button(
+          cls := "icon-action",
+          tpe := "submit",
+          aria.label := "Save source",
+          attr("title") := "Save source",
+          span(cls := "action-glyph", aria.hidden := "true", "✓"),
+          span(cls := "sr-only", "Save source")
+        )
       )
     )
   }
@@ -269,6 +285,7 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
       .filter(_.mealId == meal.id)
       .map { photo =>
         figure(
+          cls := "photo-card",
           img(
             src := s"/media/${id(photo.id)}?variant=thumbnail",
             alt := photo.comment.getOrElse(s"Photo from ${date(meal.cookedAt)}")
@@ -277,9 +294,10 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
             form(
               method := "post",
               action := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
+              cls := "compact-editor",
               attr("data-html-form") := "true",
               input(tpe := "hidden", name := "csrf_token", value := csrfToken),
-              label(`for` := s"caption-${id(photo.id)}", "Caption"),
+              label(cls := "sr-only", `for` := s"caption-${id(photo.id)}", "Photo caption"),
               input(
                 htmlId := s"caption-${id(photo.id)}",
                 name := "comment",
@@ -293,22 +311,30 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
                 aria.live := "polite",
                 role := "alert"
               ),
-              button(tpe := "submit", "Save caption")
+              button(
+                cls := "icon-action",
+                tpe := "submit",
+                aria.label := "Save caption",
+                attr("title") := "Save caption",
+                span(cls := "action-glyph", aria.hidden := "true", "✓"),
+                span(cls := "sr-only", "Save caption")
+              )
             )
           ),
-          div(
-            cls := "photo-actions",
-            confirmationForm(
+          actionTray(
+            iconActionForm(
               s"/recipes/${id(meal.recipeId)}/primary-photo/${id(photo.id)}",
               csrfToken,
-              "Use this photo as the recipe's primary photo?",
-              "Use as primary"
+              "Use as primary photo",
+              "★",
+              confirmation = Some("Use this photo as the recipe's primary photo?")
             ),
-            confirmationForm(
+            iconActionForm(
               s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
               csrfToken,
-              "Permanently delete this photo?",
-              "Delete photo"
+              "Delete photo",
+              "×",
+              confirmation = Some("Permanently delete this photo?")
             )
           )
         )
@@ -316,14 +342,20 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
     article(
       cls := "meal",
       div(
+        cls := "item-heading",
         h3(date(meal.cookedAt)),
-        div(
-          a(href := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/edit", "Edit"),
-          confirmationForm(
+        actionTray(
+          iconActionLink(
+            s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/edit",
+            "Edit cooking entry",
+            "✎"
+          ),
+          iconActionForm(
             s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
             csrfToken,
-            "Permanently delete this cooking entry and its photos?",
-            "Delete meal"
+            "Delete cooking entry",
+            "×",
+            confirmation = Some("Permanently delete this cooking entry and its photos?")
           )
         )
       ),

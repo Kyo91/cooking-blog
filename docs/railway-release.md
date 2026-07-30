@@ -5,6 +5,11 @@ a private Railway Bucket. The application proxies authenticated media; the
 bucket remains private. This is a test deployment, not yet a backup-and-restore
 qualified production release.
 
+Current feature-branch staging target: Railway project
+=cooking-blog-railway-test=, environment =staging=, service =cooking-blog=.
+Use this target explicitly for feature deployments; do not use the separate
+=cooking-blog= project.
+
 ## Prerequisites
 
 - Push this repository, including `Dockerfile` and `railway.json`, to the
