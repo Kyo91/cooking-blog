@@ -807,7 +807,7 @@ endpoint, addressing, timeout, concurrency, and public-origin configuration.
 Laptop production preserves absolute local storage and HTTP-only loopback
 behavior; cloud production requires HTTPS origin semantics, secure cookies, a
 private S3-compatible configuration, and non-development secrets. Selecting S3
-reaches an explicit Phase 10 startup boundary rather than silently using local
+reaches an explicit Phase 11 startup boundary rather than silently using local
 storage.
 
 =SCRAPE_ENABLED=false= allocates no scraper client, polling fiber, or worker
@@ -818,7 +818,7 @@ polling, and a later enabled startup drains the backlog normally.
 Production wiring now uses a configured single-administrator authenticator with
 constant-time comparison and bounded process-local failure backoff while
 development retains the =admin= / =test= dummy. The S3 client spike records the
-stable =fs2-aws= decision gate without adding an unused dependency: Phase 10
+stable =fs2-aws= decision gate without adding an unused dependency: Phase 11
 must prove the complete =PhotoStore= contract before choosing the high-level
 wrapper or the AWS SDK v2 asynchronous client directly.
 
@@ -827,7 +827,45 @@ strict compilation, all 45 Scala/PostgreSQL tests, and an actual
 =SCRAPE_ENABLED=false sbt run= startup were verified. PostgreSQL-backed suites
 now run sequentially because they deliberately share one development schema.
 
-** TODO Phase 10: S3-compatible photo storage
+** TODO Phase 10: Mobile-first browser experience overhaul
+
+- Replace wordy, wrapping action controls with a coherent icon-first action
+  system. Every control must retain a programmatic accessible name, visible
+  keyboard focus, and a 44 by 44 pixel minimum touch target.
+- Make the home page's recipe creation action a consistent add-recipe icon and
+  remove interpolated empty-search copy such as =Create an empty title=. Keep the active
+  query as prepopulated form data without making it the button label.
+- Rework recipe, meal, and photo actions for small screens: primary-photo,
+  caption/edit, and delete actions should be compact, discoverable, and clearly
+  associated with the item they affect. Keep confirmation before permanent
+  deletion.
+- Add an authenticated photo download action that returns the original image
+  with a safe download filename. Preserve authorization and avoid exposing a
+  guessable storage key.
+- Establish reusable visual tokens and browser-control patterns before adding
+  further frontend features. Verify the primary workflows on real mobile
+  viewports as well as desktop, including focus, touch targets, empty states,
+  loading, and error states.
+- Deliver the overhaul as three focused changes rather than one visual
+  mega-change:
+  1. Design foundation and home page: move the current inline browser styling
+     into a dedicated asset, establish tokens/control classes, and redesign
+     search, recipe cards, and the add-recipe action.
+  2. Recipe and meal detail: introduce reusable ScalaTags helpers for
+     icon-first controls/action trays, then update recipe, meal, source, and
+     photo layouts.
+  3. Photo download and interaction polish: add the authenticated original
+     download route and refine overflow menus, confirmations, focus behavior,
+     and mobile-browser coverage.
+- Retain server-rendered ScalaTags and focused HTMX enhancement. Do not migrate
+  to a client-side framework or Scala.js for this work; use native controls and
+  the existing small browser asset for the limited interaction that remains.
+
+Exit criterion: the home, recipe-detail, meal, and photo workflows are
+comfortable and legible on a phone without text wrapping or crowded action
+rows, and users can download an authenticated original photo in one action.
+
+** TODO Phase 11: S3-compatible photo storage
 
 - Implement =S3PhotoStore= with the existing opaque layout:
   =<prefix>/<storageKey>/<variant>.<extension>=. Upload the already processed
@@ -870,7 +908,7 @@ Exit criterion: the unchanged photo API and browser flows pass against both
 backends, and an uploaded photo remains readable after an application restart
 with no local photo volume attached.
 
-** TODO Phase 11: Photo migration, backups, and recovery
+** TODO Phase 12: Photo migration, backups, and recovery
 
 - Build an idempotent migration command that inventories database storage keys,
   copies every local original/display/thumbnail object, verifies size and a
@@ -901,7 +939,7 @@ Exit criterion: all laptop photos are checksum-verified in object storage, a
 documented rollback remains available, and an isolated database-plus-photo
 restore has succeeded.
 
-** TODO Phase 12: Cloud deployment hardening
+** TODO Phase 13: Cloud deployment hardening
 
 - Add a cloud deployment profile for one application replica, a managed
   PostgreSQL database, and a private S3-compatible bucket. Start with a small
@@ -933,7 +971,7 @@ Exit criterion: the cloud stack is HTTPS-only, uses least-privilege secrets,
 passes authenticated readiness checks, emits actionable alerts, and can be
 redeployed without losing sessions, recipes, or photos.
 
-** TODO Phase 13: Production release and cutover
+** TODO Phase 14: Production release and cutover
 
 - Run the clean Scala/PostgreSQL suite and browser workflows with scraping both
   enabled and disabled, then run the S3 contract suite and selected-provider
@@ -945,7 +983,7 @@ redeployed without losing sessions, recipes, or photos.
 - Deploy a release candidate, import a copy of the laptop data, and soak it
   privately before changing the primary URL. Compare recipe, meal, photo, and
   reference counts plus representative search results.
-- Perform the maintenance-window final sync from Phase 11, deploy one pinned
+- Perform the maintenance-window final sync from Phase 12, deploy one pinned
   application image, verify login/search/upload/read/delete/restart, and keep
   the prior laptop release and image available during the rollback window.
 - After the rollback window, remove retained local photo copies according to
@@ -954,6 +992,22 @@ redeployed without losing sessions, recipes, or photos.
 Exit criterion: the primary cloud deployment has passed the full user workflow,
 restart, migration, alert, backup, and restore checks, with a tested rollback
 path and no dependency on an application-local photo volume.
+
+** TODO Phase 15: Deliberate recipe sharing
+
+- Define explicitly shareable recipe and meal views as revocable, opaque
+  capabilities rather than making ordinary application routes public.
+- Decide sharing scope, expiry, regeneration/revocation behavior, whether
+  original photo downloads are allowed, and what metadata/imported content is
+  appropriate for an unauthenticated visitor.
+- Keep every non-shared route behind the existing default-deny authentication
+  boundary. Share tokens must be unguessable, stored only as hashes, and have
+  rate/abuse limits suitable for the public deployment.
+- Provide a clear UI for creating, copying, reviewing, and revoking a share
+  link, plus route and authorization coverage.
+
+Exit criterion: a user can intentionally share a scoped recipe or meal link,
+revoke it immediately, and no unrelated application resource becomes public.
 
 * Definition of Done for the MVP
 

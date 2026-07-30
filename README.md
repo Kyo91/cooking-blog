@@ -198,7 +198,7 @@ significant-whitespace syntax fails compilation.
 | `AUTH_PASSWORD_FILE` | unset | Preferred file-mounted login secret; takes precedence over `AUTH_PASSWORD` |
 | `AUTH_SESSION_HOURS` | `24` | Absolute session lifetime |
 | `AUTH_COOKIE_SECURE` | `false` | Require HTTPS for auth cookies |
-| `PHOTO_BACKEND` | `local` | Photo-store interpreter selector: `local` or the Phase 10 `s3` backend |
+| `PHOTO_BACKEND` | `local` | Photo-store interpreter selector: `local` or the Phase 11 `s3` backend |
 | `PHOTO_DIRECTORY` | `./data/photos` | Persistent local photo storage |
 | `PHOTO_S3_BUCKET` | unset | Private S3-compatible bucket |
 | `PHOTO_S3_PREFIX` | `cooking-blog/photos` | Object-key prefix within the bucket |
