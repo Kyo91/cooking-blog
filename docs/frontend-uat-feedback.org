@@ -1,0 +1,294 @@
+#+title: Frontend UAT Feedback Remediation Plan
+#+startup: overview
+
+* Purpose
+
+Address the recipe-detail and cooking-history feedback found during Railway
+staging UAT on 2026-07-31. The work should preserve server-rendered ScalaTags,
+native browser controls, the existing small JavaScript asset, and the
+parchment/ink/herb/terracotta interface system.
+
+The main visual correction is to make meal photos the content and the controls
+their quiet supporting tools. The main functional correction is to make the
+selected primary photo visibly and immediately consistent across the recipe
+detail hero and home recipe card.
+
+* Investigation findings
+
+** Overflow menu clipping
+
+The screenshot shows the photo delete action clipped at the bottom of its meal
+card. This is caused by two current rules working against each other:
+
+- =.meal= inherits =overflow: hidden= from the shared card rule.
+- =.overflow-actions= is absolutely positioned below its trigger.
+
+The menu is therefore clipped by the meal card before it can use the available
+page space. The current menu also contains another circular icon instead of a
+normal, visibly named menu item, so opening the menu does not improve action
+discoverability.
+
+** Icon discoverability
+
+=aria-label= and =title= make the controls programmatically named, but a title
+tooltip is unavailable on touch and is too slow to be the primary explanation
+on desktop. Ambiguous actions need a visible short label. Icon-only treatment
+should remain only where the meaning is conventional or where the containing
+control also exposes a persistent nearby label.
+
+** Caption editing
+
+Every photo currently renders an input and save button even when the user only
+wants to read the caption. This gives editing the same visual priority as the
+photo. The caption should render as ordinary text, with a compact pencil/Edit
+disclosure that reveals the form only on request.
+
+** Primary-photo behavior
+
+The database and service path is functioning: =selectPrimaryPhoto= validates
+the photo/recipe relationship, persists =recipes.primary_photo_id=, updates the
+recipe timestamp, and the HTTP integration test proves that a subsequent media
+read returns the selected photo.
+
+The observed stale image is a caching defect. Both the recipe hero and home
+card use the mutable URL =/media/recipes/:recipeId/primary=, while the generic
+media response marks it =private, max-age=31536000, immutable=. After selection,
+the browser is allowed to reuse the prior bytes for the same URL for one year.
+The current browser test only checks that the hero image is visible; it does not
+prove that its source or pixels changed.
+
+The UI also receives =recipe.primaryPhotoId= but does not use it while rendering
+photo actions, so no selected state or badge is shown. When no explicit primary
+exists, the repository intentionally falls back to the newest photo from the
+most recently cooked meal. The UI should represent that effective fallback as
+the current primary too.
+
+** Meal and photo hierarchy
+
+The current photo card is a compact 110 by 90 pixel thumbnail beside a caption
+input. That reverses the desired hierarchy from the mockups: the photo should
+be the focal record of a cooking event, while caption and management actions
+should be visually subordinate. Increasing the meal card alone will not solve
+this; the internal photo composition must change.
+
+* Design direction
+
+** Working brief
+
+- Human: a cook reviewing past attempts or quickly updating a meal, often on a
+  phone and sometimes with wet or occupied hands.
+- Task: recognize the meal from its photos first, then make an occasional,
+  unambiguous edit.
+- Feel: a calm, photo-led kitchen journal with tools that are easy to find but
+  do not compete with the food.
+
+** Domain exploration
+
+- Domain: meal history, finished dishes, cooking attempts, annotations,
+  favorites, kitchen notebook, photo contact sheet.
+- Color world: parchment paper, dark recipe ink, herb green, terracotta,
+  cream ceramic, muted graphite, warm wood.
+- Signature: a filled herb-green primary badge over the chosen food photo,
+  paired with a compact tool dock that reads like annotations on a recipe
+  journal rather than application chrome.
+- Rejecting: tiny database-style thumbnails in favor of a photo gallery;
+  unlabeled icon mystery controls in favor of short visible action names;
+  permanently open edit fields in favor of read-first disclosure.
+
+** Component checkpoint
+
+- Hierarchy: photos win through size, aspect ratio, and spacing. Meal metadata
+  comes second; controls use smaller type, quieter surfaces, and compact docks.
+- Palette: keep the existing parchment, ink, herb, and terracotta tokens. Herb
+  green communicates the affirmative current-primary state; danger color is
+  reserved for the visible Delete menu item and confirmation.
+- Depth: retain quiet card borders and restrained warm shadows. The menu is one
+  surface above its card, without introducing heavy floating panels.
+- Typography: retain serif meal dates and rounded sans-serif captions/actions.
+  Caption text uses normal body hierarchy rather than input styling.
+- Spacing: retain the 4-pixel base rhythm, 16-pixel meal padding, and 6-to-8
+  pixel tool gaps.
+
+* Implementation plan
+
+** 1. Fix primary-photo correctness and cache behavior
+
+1. Split media cache policy by resource identity:
+   - Keep immutable one-year caching for photo-ID URLs such as
+     =/media/:photoId?variant=display= because those bytes are immutable.
+   - Serve the mutable recipe-primary alias with =private, no-cache= (or
+     =max-age=0, must-revalidate=) so fallback changes and primary deletion are
+     never held for a year.
+2. Add a version query to every rendered recipe-primary URL using
+   =recipe.updatedAt=, for example
+   =/media/recipes/:id/primary?variant=display&v=:updatedEpochMillis=. This
+   immediately escapes primary URLs that browsers already cached as immutable,
+   and selection already updates =recipe.updatedAt=.
+3. Use the same versioned URL strategy for the recipe-detail hero and home
+   card thumbnail so they cannot diverge.
+4. Compute an =effectivePrimaryPhotoId= for detail rendering:
+   - Use the explicit =recipe.primaryPhotoId= when present.
+   - Otherwise use the first photo from the repository's existing deterministic
+     newest-meal/newest-photo ordering.
+5. Pass that effective ID into each photo view. Render the current photo with:
+   - A persistent =Primary= badge over the upper-left of the image.
+   - A filled herb-green star action with =aria-pressed="true"= and a visible
+     =Primary= label.
+   - A disabled submit state so selecting the current primary is not offered as
+     a redundant mutation.
+6. Render other photos with an outlined star and the visible label
+   =Make primary=. After a successful selection, keep the existing server
+   redirect, but ensure the newly rendered page has the changed versioned image
+   URL and selected state.
+
+** 2. Make meal photos the focal content
+
+1. Replace the thumbnail-plus-input photo card with a photo-first figure:
+   - Use the display variant rather than the thumbnail variant.
+   - Give images a stable 4:3 or 3:2 aspect ratio, full card width, and
+     =object-fit: cover=.
+   - Use a one-column gallery on phones and an auto-fitting two-column gallery
+     on wider screens.
+2. Keep the meal date and notes above the gallery. Avoid a second heavy card
+   inside every meal; use a quiet photo figure surface and spacing to group its
+   caption and tools.
+3. Place a compact action dock along the lower image/caption edge. It should be
+   visually muted by default and gain contrast on =:hover= or =:focus-within=,
+   while remaining fully visible on coarse-pointer/touch devices.
+4. Keep every hit target at least 44 by 44 pixels. The visual glyph may be
+   smaller, but hit areas must not overlap.
+5. Add the primary badge as an image overlay so the chosen photo is recognizable
+   even before the action dock is inspected.
+
+** 3. Change captions to read-first, edit-on-demand controls
+
+1. Render the current caption as plain text below the image. Render a quiet
+   =No caption= placeholder when absent so the edit location is still clear.
+2. Add a native =details=/=summary= caption disclosure with a pencil icon and
+   visible =Edit caption= label. Opening it reveals the existing input, error
+   output, and save button.
+3. Prepopulate the input with the stored caption and retain current length,
+   CSRF, validation, error association, and invalid-field focus behavior.
+4. Give the save action a visible =Save caption= label. Closing the disclosure
+   without submitting leaves persisted text unchanged.
+5. After save, redirect back to the recipe and render the updated plain-text
+   caption with the disclosure closed.
+
+** 4. Make action meaning visible without hover
+
+1. Extend the reusable action helpers to support an icon plus a short visible
+   label. Do not depend on =title= for meaning; retain it only as a supplement.
+2. In each photo tool dock, use the explicit labels:
+   - =Primary= or =Make primary=
+   - =Edit caption=
+   - =Download=
+   - =More=
+3. Change overflow contents from circular icon actions into full-width menu
+   rows with an icon and visible text, such as =Delete photo=. Preserve the
+   permanent-deletion confirmation.
+4. Audit recipe, meal, and source action trays in the same pass. Ambiguous
+   retry, edit, and destructive actions should either have visible compact
+   labels or appear as labeled overflow rows. Conventional Back and Add
+   affordances may remain compact when their page context is explicit.
+5. Retain unique programmatic names, visible focus rings, keyboard activation,
+   Escape close, outside-click close, and focus return to the overflow trigger.
+
+** 5. Make overflow placement collision-safe
+
+1. Remove =overflow: hidden= from meal cards; keep clipping only on components
+   that actually need it, such as recipe-card images.
+2. Give overflow panels a bounded width and viewport allowance:
+   =max-width: calc(100vw - 2rem)= with wrapping labels rather than
+   =min-width: max-content=.
+3. When a native =details= menu opens, measure the panel and trigger in
+   =app-v1.js=. Add placement classes to:
+   - Open upward when there is insufficient space below.
+   - Align to the start when right alignment would cross the viewport edge.
+   - Recalculate on resize and close on scroll rather than leaving a detached
+     panel.
+4. Keep the native =details=/=summary= disclosure as the semantic control; the
+   JavaScript only chooses placement and manages established close/focus
+   behavior.
+5. Verify the menu against the exact desktop failure shape: a photo action dock
+   near the bottom and right edge of a meal card and viewport.
+
+* Expected code touchpoints
+
+- =src/main/scala/cookingblog/http/templates/BrowserRecipeDetailTemplates.scala=
+  for effective-primary state, photo-first markup, caption disclosure, badges,
+  and labeled photo actions.
+- =src/main/scala/cookingblog/http/templates/BrowserHomeTemplates.scala= for
+  versioned primary thumbnail URLs.
+- =src/main/scala/cookingblog/http/templates/BrowserTemplateSupport.scala= for
+  labeled action and labeled overflow-row helpers.
+- =src/main/scala/cookingblog/http/api/ApiRoutes.scala= for separate mutable and
+  immutable media cache policies.
+- =src/main/resources/public/app-v1.css= for photo gallery, primary badge,
+  action dock, read-first captions, and collision-safe menu styles.
+- =src/main/resources/public/app-v1.js= for overflow placement and focus-safe
+  disclosure behavior.
+- =src/test/scala/cookingblog/http/PhotoApiIntegrationSuite.scala= and
+  =e2e/browser.spec.js= for cache, selection, visual state, disclosure, and
+  viewport regressions.
+
+No schema migration or new client-side framework is required.
+
+* Verification plan
+
+** Scala and HTTP coverage
+
+- Prove =PUT /api/v1/recipes/:recipeId/primary-photo/:photoId= persists the
+  selected ID and still rejects a photo from another recipe.
+- Prove the recipe-primary route returns the newly selected photo.
+- Assert direct photo-ID media remains immutable while recipe-primary media is
+  revalidated and no longer receives the one-year immutable policy.
+- Cover explicit primary, automatic fallback, deletion of the explicit primary,
+  and fallback to the next eligible photo.
+- Preserve caption update validation and authorization coverage.
+
+** Browser coverage
+
+- Upload two visually distinct fixtures, select the first, then the second.
+  Assert that the primary badge/button moves and that both the hero =src= and
+  home-card =src= change version. Do not treat mere image visibility as proof.
+- Verify a fresh image request returns bytes for the newly selected photo after
+  the redirect, including with browser cache enabled.
+- Assert captions begin as text, the input is absent or hidden, activating
+  =Edit caption= opens and focuses the editor, and save returns to text mode.
+- Open every overflow menu at 390x844, 768x1024, and a desktop viewport with the
+  trigger near each viewport edge. Assert the panel bounding box stays inside
+  the viewport and is not clipped by the meal card.
+- Verify visible action labels, 44-pixel targets, no horizontal page overflow,
+  keyboard activation, Escape/focus return, outside-click close, and deletion
+  confirmation.
+- Capture desktop and phone screenshots for comparison with
+  =docs/ui/mobile-photo-actions-concept.png= and
+  =docs/ui/mobile-recipe-detail-concept.png=.
+
+** Manual UAT checklist
+
+1. Open a meal containing at least two photos near the bottom of a desktop
+   viewport; every menu action remains fully visible.
+2. Identify primary, caption edit, download, and delete behavior without using
+   hover tooltips.
+3. Read captions without seeing form controls; open, cancel, and save an edit.
+4. Select each photo in turn and confirm the badge, button state, recipe hero,
+   and home card all agree immediately.
+5. On a phone, confirm the photo is the dominant element, the tool dock is
+   reachable, and no action or caption control crowds the meal timeline.
+
+* Delivery sequence
+
+Deliver this follow-up in three reviewable changes:
+
+1. Primary-photo correctness: cache policy, versioned URLs, effective-primary
+   state, and regression tests.
+2. Photo-first meal layout: large gallery images, primary overlay, labeled
+   action dock, and read-first caption disclosure.
+3. Interaction hardening: collision-safe labeled overflow menus, responsive
+   and keyboard coverage, final desktop/mobile screenshot review, and Railway
+   staging deployment for UAT.
+
+The work is complete when all five manual UAT checks pass on Railway staging
+and automated coverage proves the primary image changes rather than merely
+remaining visible.
