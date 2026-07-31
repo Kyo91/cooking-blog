@@ -75,7 +75,25 @@
 
   document.addEventListener("submit", (event) => {
     const form = event.target.closest(".confirmation-form");
-    if (form && !window.confirm(form.dataset.confirm)) event.preventDefault();
+    if (form && !window.confirm(form.dataset.confirm)) {
+      event.preventDefault();
+      form.closest(".overflow-menu")?.removeAttribute("open");
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    const current = event.target.closest(".overflow-menu");
+    document.querySelectorAll(".overflow-menu[open]").forEach((menu) => {
+      if (menu !== current) menu.removeAttribute("open");
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const menu = event.target.closest(".overflow-menu") || document.querySelector(".overflow-menu[open]");
+    if (!menu?.open) return;
+    menu.removeAttribute("open");
+    menu.querySelector("summary")?.focus();
   });
 
   document.addEventListener("submit", async (event) => {

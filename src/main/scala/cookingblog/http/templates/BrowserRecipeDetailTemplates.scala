@@ -108,12 +108,16 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
               "+",
               primary = true
             ),
-            iconActionForm(
-              s"/recipes/${id(recipe.id)}/delete",
-              csrfToken,
-              "Delete recipe",
-              "×",
-              confirmation = Some("Permanently delete this recipe and all of its cooking history?")
+            overflowActionMenu(
+              "More recipe actions",
+              iconActionForm(
+                s"/recipes/${id(recipe.id)}/delete",
+                csrfToken,
+                "Delete recipe",
+                "×",
+                confirmation =
+                  Some("Permanently delete this recipe and all of its cooking history?")
+              )
             )
           )
         ),
@@ -220,12 +224,15 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
         confirmation = Some("Retry this import now?")
       )
     )
-    val delete = iconActionForm(
-      s"$endpoint/delete",
-      csrfToken,
-      "Delete source",
-      "×",
-      confirmation = Some("Permanently delete this source?")
+    val delete = overflowActionMenu(
+      "More source actions",
+      iconActionForm(
+        s"$endpoint/delete",
+        csrfToken,
+        "Delete source",
+        "×",
+        confirmation = Some("Permanently delete this source?")
+      )
     )
     val field = reference.kind match {
       case ReferenceKind.Url =>
@@ -329,12 +336,21 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
               "★",
               confirmation = Some("Use this photo as the recipe's primary photo?")
             ),
-            iconActionForm(
-              s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
-              csrfToken,
-              "Delete photo",
-              "×",
-              confirmation = Some("Permanently delete this photo?")
+            iconActionLink(
+              s"/media/${id(photo.id)}/download",
+              "Download original photo",
+              "↓",
+              download = true
+            ),
+            overflowActionMenu(
+              "More photo actions",
+              iconActionForm(
+                s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
+                csrfToken,
+                "Delete photo",
+                "×",
+                confirmation = Some("Permanently delete this photo?")
+              )
             )
           )
         )
@@ -350,12 +366,15 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
             "Edit cooking entry",
             "✎"
           ),
-          iconActionForm(
-            s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
-            csrfToken,
-            "Delete cooking entry",
-            "×",
-            confirmation = Some("Permanently delete this cooking entry and its photos?")
+          overflowActionMenu(
+            "More cooking entry actions",
+            iconActionForm(
+              s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
+              csrfToken,
+              "Delete cooking entry",
+              "×",
+              confirmation = Some("Permanently delete this cooking entry and its photos?")
+            )
           )
         )
       ),

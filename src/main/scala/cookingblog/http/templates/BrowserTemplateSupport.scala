@@ -9,7 +9,7 @@ import org.http4s.headers.`Content-Type`
 import scalatags.Text.Frag
 import scalatags.Text.all.*
 import scalatags.Text.attrs.{id as htmlId}
-import scalatags.Text.tags2.{main, title}
+import scalatags.Text.tags2.{details, main, summary as detailsSummary, title}
 
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -40,11 +40,13 @@ private[templates] trait BrowserTemplateSupport {
       hrefValue: String,
       accessibleName: String,
       icon: String,
-      primary: Boolean = false
+      primary: Boolean = false,
+      download: Boolean = false
   ): Frag =
     a(
       cls := s"icon-action${if (primary) " primary-action" else ""}",
       href := hrefValue,
+      Option.when(download)(attr("download") := ""),
       aria.label := accessibleName,
       attr("title") := accessibleName,
       span(cls := "action-glyph", aria.hidden := "true", icon),
@@ -73,6 +75,26 @@ private[templates] trait BrowserTemplateSupport {
         attr("title") := accessibleName,
         span(cls := "action-glyph", aria.hidden := "true", icon),
         span(cls := "sr-only", accessibleName)
+      )
+    )
+
+  protected def overflowActionMenu(
+      accessibleName: String,
+      actions: Frag*
+  ): Frag =
+    details(
+      cls := "overflow-menu",
+      detailsSummary(
+        cls := "icon-action overflow-trigger",
+        aria.label := accessibleName,
+        attr("title") := accessibleName,
+        span(cls := "action-glyph", aria.hidden := "true", "⋯"),
+        span(cls := "sr-only", accessibleName)
+      ),
+      div(
+        cls := "overflow-actions",
+        attr("role") := "group",
+        actionTray(actions*)
       )
     )
 

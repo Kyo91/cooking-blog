@@ -86,6 +86,12 @@ textarea { min-height: 8rem; resize: vertical; }
 .icon-action.primary-action { border-color: var(--terracotta); background: var(--terracotta); color: #fffdf8; }
 .icon-action.primary-action:hover { border-color: #97452f; background: #97452f; }
 .action-glyph { font-family: Georgia, "Times New Roman", serif; font-size: 1.3rem; font-weight: 700; line-height: 1; }
+.overflow-menu { position: relative; flex: 0 0 auto; }
+.overflow-trigger { list-style: none; }
+.overflow-trigger::-webkit-details-marker { display: none; }
+.overflow-menu[open] .overflow-trigger { border-color: var(--herb); background: #f5f8f1; }
+.overflow-actions { position: absolute; z-index: 2; top: calc(100% + 0.4rem); right: 0; min-width: max-content; padding: 0.35rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--card); box-shadow: 0 8px 20px rgba(45, 44, 35, 0.12); }
+.overflow-actions .action-tray { flex-wrap: nowrap; }
 .item-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
 .item-heading h3 { margin: 0; }
 .compact-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.45rem; }
@@ -130,6 +136,7 @@ textarea { min-height: 8rem; resize: vertical; }
   .photo-card { grid-template-columns: 96px minmax(0, 1fr); width: 100%; }
   .photo-card img { width: 96px; height: 82px; }
   .photo-card .action-tray { grid-column: 1 / -1; justify-self: stretch; justify-content: flex-end; }
+  .overflow-actions { right: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

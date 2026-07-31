@@ -94,6 +94,15 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
           )
         )
         fallbackColor <- responseColor(fallback)
+        download <- context.app.run(
+          auth.request(
+            Request[IO](
+              GET,
+              Uri.unsafeFromString(s"/media/$firstPhotoId/download")
+            )
+          )
+        )
+        downloadColor <- responseColor(download)
         captioned <- context.app.run(
           auth.request(
             Request[IO](
@@ -184,6 +193,16 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
         assertEquals(storedAfterUpload.size, 2)
         assertEquals(fallback.status, Status.Ok)
         assertEquals(fallbackColor, Color.BLUE)
+        assertEquals(download.status, Status.Ok)
+        assertEquals(downloadColor, Color.RED)
+        assertEquals(
+          download.headers.get(CIString("Content-Disposition")).map(_.head.value),
+          Some("attachment; filename=\"red.png\"")
+        )
+        assertEquals(
+          download.headers.get(CIString("Cache-Control")).map(_.head.value),
+          Some("private, no-store")
+        )
         assertEquals(captioned.status, Status.Ok)
         assertEquals(selected.status, Status.Ok)
         assertEquals(explicitColor, Color.RED)

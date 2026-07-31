@@ -101,7 +101,13 @@ test("meal photo upload supports caption, primary selection, and deletion", asyn
   await page.getByRole("button", { name: "Use as primary" }).click();
   await expect(page.locator(".hero-photo")).toBeVisible();
 
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download original photo" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("photo.png");
+
   page.once("dialog", (dialog) => dialog.accept());
+  await page.getByLabel("More photo actions").click();
   await page.getByRole("button", { name: "Delete photo" }).click();
   await expect(page.getByLabel("Photo caption")).toHaveCount(0);
 });
@@ -121,10 +127,14 @@ test("recipe history groups icon actions with their meal and photo", async ({ pa
 
   const meal = page.locator(".meal");
   await expect(meal.getByRole("link", { name: "Edit cooking entry" })).toBeVisible();
-  await expect(meal.getByRole("button", { name: "Delete cooking entry" })).toBeVisible();
+  await expect(meal.getByLabel("More cooking entry actions")).toBeVisible();
   await expect(meal.getByRole("button", { name: "Use as primary photo" })).toBeVisible();
+  await expect(meal.getByRole("link", { name: "Download original photo" })).toBeVisible();
+  await expect(meal.getByLabel("More photo actions")).toBeVisible();
+  await meal.getByLabel("More photo actions").click();
   await expect(meal.getByRole("button", { name: "Delete photo" })).toBeVisible();
   await expect(meal.getByRole("button", { name: "Save caption" })).toHaveCSS("min-height", "44px");
+  await expect(meal.getByRole("link", { name: "Download original photo" })).toHaveCSS("min-height", "44px");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBeFalsy();
 });
