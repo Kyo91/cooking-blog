@@ -51,6 +51,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         anonymousMedia <- app.run(
           Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000")
         )
+        anonymousDownload <- app.run(
+          Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000/download")
+        )
         anonymousStatic <- app.run(Request[IO](GET, uri"/static/app-v1.js"))
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
@@ -100,6 +103,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(anonymousHome.status, Status.SeeOther)
         assertEquals(anonymousApi.status, Status.Unauthorized)
         assertEquals(anonymousMedia.status, Status.SeeOther)
+        assertEquals(anonymousDownload.status, Status.SeeOther)
         assertEquals(anonymousStatic.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)

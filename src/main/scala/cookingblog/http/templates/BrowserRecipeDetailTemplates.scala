@@ -79,9 +79,11 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
 
   private def detailPage(detail: BrowserRecipe, csrfToken: String): String = {
     val recipe = detail.recipe
+    val effectivePrimaryPhotoId =
+      recipe.primaryPhotoId.orElse(detail.photos.headOption.map(_.id))
     val primary = img(
       cls := "hero-photo",
-      src := s"/media/recipes/${id(recipe.id)}/primary?variant=display",
+      src := s"/media/recipes/${id(recipe.id)}/primary?variant=display&v=${recipe.updatedAt.toEpochMilli}",
       alt := s"Photo of ${recipe.title}"
     )
     val keywords =
@@ -92,7 +94,7 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
       else frag(detail.references.map(referenceView(_, recipe.id, csrfToken)))
     val meals =
       if (detail.meals.isEmpty) div(cls := "empty-state", p("No cooking entries yet."))
-      else frag(detail.meals.map(mealView(_, detail.photos, csrfToken)))
+      else frag(detail.meals.map(mealView(_, detail.photos, effectivePrimaryPhotoId, csrfToken)))
     page(
       recipe.title,
       main(
@@ -101,70 +103,85 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
           cls := "detail-heading",
           div(h1(recipe.title), p(recipe.description), keywords),
           actionTray(
-            iconActionLink(s"/recipes/${id(recipe.id)}/edit", "Edit recipe", "✎"),
+            iconActionLink(
+              s"/recipes/${id(recipe.id)}/edit",
+              "Edit recipe",
+              "✎",
+              visibleLabel = Some("Edit recipe")
+            ),
             iconActionLink(
               s"/recipes/${id(recipe.id)}/meals/new",
               "Record meal",
               "+",
-              primary = true
+              primary = true,
+              visibleLabel = Some("Record meal")
             ),
-            iconActionForm(
-              s"/recipes/${id(recipe.id)}/delete",
-              csrfToken,
-              "Delete recipe",
-              "×",
-              confirmation = Some("Permanently delete this recipe and all of its cooking history?")
+            overflowActionMenu(
+              "More recipe actions",
+              overflowActionForm(
+                s"/recipes/${id(recipe.id)}/delete",
+                csrfToken,
+                "Delete recipe",
+                "×",
+                confirmation =
+                  Some("Permanently delete this recipe and all of its cooking history?"),
+                danger = true
+              )
             )
           )
         ),
         primary,
+        section(htmlH2("Cooking history"), meals),
         section(
           htmlH2("Sources and imports"),
           div(htmlId := "references", references),
-          form(
-            method := "post",
-            action := s"/recipes/${id(recipe.id)}/references",
-            cls := "reference-form",
-            attr("data-html-form") := "true",
-            input(tpe := "hidden", name := "csrf_token", value := csrfToken),
-            label(`for` := "reference-kind", "Add a source"),
-            select(
-              htmlId := "reference-kind",
-              name := "kind",
-              option(value := "url", "Recipe URL"),
-              option(value := "book", "Book citation")
-            ),
-            div(
-              cls := "inline-form",
-              input(
-                htmlId := "reference-url",
-                name := "url",
-                tpe := "url",
-                aria.describedby := "reference-form-errors",
-                placeholder := "https://example.com/recipe"
+          details(
+            cls := "add-source-disclosure",
+            detailsSummary("+ Add source"),
+            form(
+              method := "post",
+              action := s"/recipes/${id(recipe.id)}/references",
+              cls := "reference-form",
+              attr("data-html-form") := "true",
+              input(tpe := "hidden", name := "csrf_token", value := csrfToken),
+              label(`for` := "reference-kind", "Source type"),
+              select(
+                htmlId := "reference-kind",
+                name := "kind",
+                option(value := "url", "Recipe URL"),
+                option(value := "book", "Book citation")
               ),
-              input(
-                htmlId := "reference-citation",
-                name := "citation",
-                aria.describedby := "reference-form-errors",
-                placeholder := "Book title, author, page",
-                hidden
+              div(
+                cls := "inline-form",
+                input(
+                  htmlId := "reference-url",
+                  name := "url",
+                  tpe := "url",
+                  aria.describedby := "reference-form-errors",
+                  placeholder := "https://example.com/recipe"
+                ),
+                input(
+                  htmlId := "reference-citation",
+                  name := "citation",
+                  aria.describedby := "reference-form-errors",
+                  placeholder := "Book title, author, page",
+                  hidden
+                ),
+                button(tpe := "submit", "Add source")
               ),
-              button(tpe := "submit", "Add source")
-            ),
-            p(
-              cls := "hint",
-              "URL imports begin in the background. Book citations are saved as written."
-            ),
-            p(
-              htmlId := "reference-form-errors",
-              cls := "form-error",
-              aria.live := "polite",
-              role := "alert"
+              p(
+                cls := "hint",
+                "URL imports begin in the background. Book citations are saved as written."
+              ),
+              p(
+                htmlId := "reference-form-errors",
+                cls := "form-error",
+                aria.live := "polite",
+                role := "alert"
+              )
             )
           )
-        ),
-        section(htmlH2("Cooking history"), meals)
+        )
       )
     )
   }
@@ -217,15 +234,20 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
         csrfToken,
         "Retry import",
         "↻",
-        confirmation = Some("Retry this import now?")
+        confirmation = Some("Retry this import now?"),
+        visibleLabel = Some("Retry import")
       )
     )
-    val delete = iconActionForm(
-      s"$endpoint/delete",
-      csrfToken,
-      "Delete source",
-      "×",
-      confirmation = Some("Permanently delete this source?")
+    val delete = overflowActionMenu(
+      "More source actions",
+      overflowActionForm(
+        s"$endpoint/delete",
+        csrfToken,
+        "Delete source",
+        "×",
+        confirmation = Some("Permanently delete this source?"),
+        danger = true
+      )
     )
     val field = reference.kind match {
       case ReferenceKind.Url =>
@@ -280,61 +302,94 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
     )
   }
 
-  private def mealView(meal: Meal, photos: List[Photo], csrfToken: String): Frag = {
+  private def mealView(
+      meal: Meal,
+      photos: List[Photo],
+      effectivePrimaryPhotoId: Option[PhotoId],
+      csrfToken: String
+  ): Frag = {
     val mealPhotos = photos
       .filter(_.mealId == meal.id)
       .map { photo =>
+        val isPrimary = effectivePrimaryPhotoId.contains(photo.id)
         figure(
           cls := "photo-card",
-          img(
-            src := s"/media/${id(photo.id)}?variant=thumbnail",
-            alt := photo.comment.getOrElse(s"Photo from ${date(meal.cookedAt)}")
+          div(
+            cls := "photo-frame",
+            img(
+              src := s"/media/${id(photo.id)}?variant=display",
+              alt := photo.comment.getOrElse(s"Photo from ${date(meal.cookedAt)}")
+            ),
+            Option.when(isPrimary)(span(cls := "primary-badge", "★ Primary"))
           ),
           figcaption(
-            form(
-              method := "post",
-              action := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
-              cls := "compact-editor",
-              attr("data-html-form") := "true",
-              input(tpe := "hidden", name := "csrf_token", value := csrfToken),
-              label(cls := "sr-only", `for` := s"caption-${id(photo.id)}", "Photo caption"),
-              input(
-                htmlId := s"caption-${id(photo.id)}",
-                name := "comment",
-                aria.describedby := s"caption-errors-${id(photo.id)}",
-                value := photo.comment.getOrElse(""),
-                maxlength := 1000
+            p(
+              cls := s"photo-caption${if (photo.comment.isEmpty) " empty-caption" else ""}",
+              photo.comment.getOrElse("No caption")
+            ),
+            details(
+              cls := "caption-editor",
+              attr("data-caption-editor") := "true",
+              detailsSummary(
+                cls := "caption-edit-trigger",
+                span(cls := "action-glyph", aria.hidden := "true", "✎"),
+                span("Edit caption")
               ),
-              p(
-                htmlId := s"caption-errors-${id(photo.id)}",
-                cls := "form-error",
-                aria.live := "polite",
-                role := "alert"
-              ),
-              button(
-                cls := "icon-action",
-                tpe := "submit",
-                aria.label := "Save caption",
-                attr("title") := "Save caption",
-                span(cls := "action-glyph", aria.hidden := "true", "✓"),
-                span(cls := "sr-only", "Save caption")
+              form(
+                method := "post",
+                action := s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}",
+                cls := "caption-form",
+                attr("data-html-form") := "true",
+                input(tpe := "hidden", name := "csrf_token", value := csrfToken),
+                label(`for` := s"caption-${id(photo.id)}", "Caption"),
+                input(
+                  htmlId := s"caption-${id(photo.id)}",
+                  name := "comment",
+                  aria.describedby := s"caption-errors-${id(photo.id)}",
+                  value := photo.comment.getOrElse(""),
+                  maxlength := 1000
+                ),
+                p(
+                  htmlId := s"caption-errors-${id(photo.id)}",
+                  cls := "form-error",
+                  aria.live := "polite",
+                  role := "alert"
+                ),
+                button(cls := "primary save-caption", tpe := "submit", "Save caption")
               )
             )
           ),
-          actionTray(
+          div(
+            cls := "photo-action-dock",
             iconActionForm(
               s"/recipes/${id(meal.recipeId)}/primary-photo/${id(photo.id)}",
               csrfToken,
-              "Use as primary photo",
-              "★",
-              confirmation = Some("Use this photo as the recipe's primary photo?")
+              if (isPrimary) "Primary photo" else "Make primary photo",
+              if (isPrimary) "★" else "☆",
+              confirmation =
+                Option.when(!isPrimary)("Use this photo as the recipe's primary photo?"),
+              primary = isPrimary,
+              visibleLabel = Some(if (isPrimary) "Primary" else "Make primary"),
+              pressed = Some(isPrimary),
+              disabledAction = isPrimary
             ),
-            iconActionForm(
-              s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
-              csrfToken,
-              "Delete photo",
-              "×",
-              confirmation = Some("Permanently delete this photo?")
+            iconActionLink(
+              s"/media/${id(photo.id)}/download",
+              "Download original photo",
+              "↓",
+              download = true,
+              visibleLabel = Some("Download")
+            ),
+            overflowActionMenu(
+              "More photo actions",
+              overflowActionForm(
+                s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/photos/${id(photo.id)}/delete",
+                csrfToken,
+                "Delete photo",
+                "×",
+                confirmation = Some("Permanently delete this photo?"),
+                danger = true
+              )
             )
           )
         )
@@ -348,14 +403,19 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
           iconActionLink(
             s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/edit",
             "Edit cooking entry",
-            "✎"
+            "✎",
+            visibleLabel = Some("Edit meal")
           ),
-          iconActionForm(
-            s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
-            csrfToken,
-            "Delete cooking entry",
-            "×",
-            confirmation = Some("Permanently delete this cooking entry and its photos?")
+          overflowActionMenu(
+            "More cooking entry actions",
+            overflowActionForm(
+              s"/recipes/${id(meal.recipeId)}/meals/${id(meal.id)}/delete",
+              csrfToken,
+              "Delete cooking entry",
+              "×",
+              confirmation = Some("Permanently delete this cooking entry and its photos?"),
+              danger = true
+            )
           )
         )
       ),

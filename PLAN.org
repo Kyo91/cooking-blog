@@ -833,7 +833,7 @@ strict compilation, all 45 Scala/PostgreSQL tests, and an actual
 =SCRAPE_ENABLED=false sbt run= startup were verified. PostgreSQL-backed suites
 now run sequentially because they deliberately share one development schema.
 
-** TODO Phase 10: Mobile-first browser experience overhaul
+** DONE Phase 10: Mobile-first browser experience overhaul
 
 - Replace wordy, wrapping action controls with a coherent icon-first action
   system. Every control must retain a programmatic accessible name, visible
@@ -867,7 +867,7 @@ now run sequentially because they deliberately share one development schema.
   to a client-side framework or Scala.js for this work; use native controls and
   the existing small browser asset for the limited interaction that remains.
 
-Current progress (2026-07-30): Parts 1 and 2 are implemented. The former inline browser stylesheet is now the authenticated
+Initial implementation (2026-07-31): The former inline browser stylesheet is now the authenticated
 =app-v1.css= asset, with reusable parchment/ink/herb/terracotta visual tokens,
 responsive control and card patterns, visible focus states, reduced-motion
 handling, and 44-pixel icon-control sizing. The home page has an icon-first,
@@ -884,14 +884,57 @@ for permanent deletion, while photo captions and source edits use compact
 associated editors. Long recipe titles wrap rather than crowd controls on a
 phone.
 
-ScalaFmt and all 52 Scala/PostgreSQL tests pass. Seven Playwright workflows
-pass, including 390-pixel mobile checks for action targets, no horizontal
-overflow, active-query prepopulation, whole-card recipe navigation, and
-item-associated recipe-history actions.
+The authenticated =GET /media/:photoId/download= route streams the original
+variant as a safe attachment filename without exposing the opaque storage key
+or permitting public access. Photo actions keep primary selection and download
+immediately available, while permanent recipe, meal, source, and photo actions
+live in native, keyboard-accessible overflow disclosures that preserve the
+existing confirmation step. Escape and outside interaction close those menus
+without trapping focus.
+
+ScalaFmt, the focused photo and authentication integration coverage, and seven
+Playwright workflows pass, including 390-pixel mobile checks for action
+targets, no horizontal overflow, active-query prepopulation, whole-card recipe
+navigation, download filenames, and item-associated recipe-history actions.
+
+Railway staging UAT follow-up (2026-07-31): Phase 10 remains open until the
+issues and acceptance checks in =docs/frontend-uat-feedback.org= are addressed.
+The follow-up must prevent overflow menus from being clipped or leaving the
+viewport; replace hover-dependent icon discovery with visible action meaning;
+render captions as text with edit-on-demand controls; show the explicit or
+automatic primary-photo state; correct stale recipe-primary images caused by
+the mutable primary alias receiving immutable cache headers; and make meal
+photos the visual focus of the cooking-history layout. Completion requires the
+updated hero and home-card images, selected-primary indicators, caption flow,
+overflow placement, touch targets, focus behavior, and desktop/mobile photo
+hierarchy to pass automated browser coverage and Railway staging UAT.
+
+Local remediation (2026-08-02): recipe-primary media now revalidates while
+immutable photo-ID media retains its one-year cache policy. Versioned hero and
+home-card URLs, effective fallback-primary state, visible primary badges, and
+byte-level browser assertions keep selected images consistent. Cooking history
+uses display-sized photo galleries, read-first captions with focused
+edit-on-demand disclosure, visibly labeled action docks, and collision-safe
+labeled overflow rows. The add-source editor is collapsed behind a native
+disclosure, and mobile detail actions stack below long titles. The clean 52-test
+Scala/PostgreSQL suite passes against an isolated database, and all nine browser
+workflows pass at phone, tablet, and desktop sizes.
+
+Railway staging UAT (2026-08-02): all five manual checks passed. Overflow menus
+remain visible, action meaning is discoverable without hover, captions are
+read-first and editable on demand, primary-photo state is consistent across
+detail and home views, and the mobile photo hierarchy remains usable. The final
+recipe-detail refinement places Cooking history before Sources and imports; its
+focused browser regression passed and deployment
+`214f8f35-d965-4b4d-b81a-68724adf4982` reached Railway staging successfully.
 
 Exit criterion: the home, recipe-detail, meal, and photo workflows are
 comfortable and legible on a phone without text wrapping or crowded action
-rows, and users can download an authenticated original photo in one action.
+rows; users can download an authenticated original photo in one action; photo
+actions remain understandable without hover; overflow menus stay within the
+viewport; captions are read-first and editable on demand; and the selected or
+fallback primary photo is visibly identified and immediately consistent on the
+recipe detail and home pages.
 
 ** TODO Phase 11: S3-compatible photo storage
 

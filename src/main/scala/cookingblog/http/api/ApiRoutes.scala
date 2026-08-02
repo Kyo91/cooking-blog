@@ -228,7 +228,7 @@ final class ApiRoutes(
           withVariant(request) { variant =>
             photoService
               .recipePrimaryMedia(recipeId, variant)
-              .flatMap(mediaResponse)
+              .flatMap(mediaResponse(_, "private, no-cache"))
           }
         }
 
@@ -238,7 +238,9 @@ final class ApiRoutes(
             errorResponse(Validation(Map("photoId" -> List("must be a UUID"))))
           case Right(photoId) =>
             withVariant(request) { variant =>
-              photoService.media(photoId, variant).flatMap(mediaResponse)
+              photoService
+                .media(photoId, variant)
+                .flatMap(mediaResponse(_, "private, max-age=31536000, immutable"))
             }
         }
     }
@@ -359,7 +361,8 @@ final class ApiRoutes(
     }
 
   private def mediaResponse(
-      result: Either[ApiError, PhotoMedia]
+      result: Either[ApiError, PhotoMedia],
+      cacheControl: String
   ): IO[Response[IO]] =
     result.fold(
       errorResponse,
@@ -373,7 +376,7 @@ final class ApiRoutes(
               ),
               Header.Raw(
                 CIString("Cache-Control"),
-                "private, max-age=31536000, immutable"
+                cacheControl
               ),
               Header.Raw(CIString("X-Content-Type-Options"), "nosniff")
             )
