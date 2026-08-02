@@ -41,16 +41,22 @@ private[templates] trait BrowserTemplateSupport {
       accessibleName: String,
       icon: String,
       primary: Boolean = false,
-      download: Boolean = false
+      download: Boolean = false,
+      visibleLabel: Option[String] = None
   ): Frag =
     a(
-      cls := s"icon-action${if (primary) " primary-action" else ""}",
+      cls := s"icon-action${
+          if (primary) " primary-action" else ""
+        }${if (visibleLabel.nonEmpty) " has-label" else ""}",
       href := hrefValue,
       Option.when(download)(attr("download") := ""),
       aria.label := accessibleName,
       attr("title") := accessibleName,
       span(cls := "action-glyph", aria.hidden := "true", icon),
-      span(cls := "sr-only", accessibleName)
+      span(
+        cls := visibleLabel.fold("sr-only")(_ => "action-label"),
+        visibleLabel.getOrElse(accessibleName)
+      )
     )
 
   protected def iconActionForm(
@@ -59,7 +65,10 @@ private[templates] trait BrowserTemplateSupport {
       accessibleName: String,
       icon: String,
       confirmation: Option[String] = None,
-      primary: Boolean = false
+      primary: Boolean = false,
+      visibleLabel: Option[String] = None,
+      pressed: Option[Boolean] = None,
+      disabledAction: Boolean = false
   ): Frag =
     form(
       method := "post",
@@ -69,12 +78,42 @@ private[templates] trait BrowserTemplateSupport {
       confirmation.fold(frag())(message => attr("data-confirm") := message),
       input(tpe := "hidden", name := "csrf_token", value := csrfToken),
       button(
-        cls := s"icon-action${if (primary) " primary-action" else ""}",
+        cls := s"icon-action${if (primary) " primary-action" else ""}${
+            if (visibleLabel.nonEmpty) " has-label" else ""
+          }",
         tpe := "submit",
+        Option.when(disabledAction)(disabled),
+        pressed.map(value => attr("aria-pressed") := value.toString),
         aria.label := accessibleName,
         attr("title") := accessibleName,
         span(cls := "action-glyph", aria.hidden := "true", icon),
-        span(cls := "sr-only", accessibleName)
+        span(
+          cls := visibleLabel.fold("sr-only")(_ => "action-label"),
+          visibleLabel.getOrElse(accessibleName)
+        )
+      )
+    )
+
+  protected def overflowActionForm(
+      actionUrl: String,
+      csrfToken: String,
+      accessibleName: String,
+      icon: String,
+      confirmation: Option[String] = None,
+      danger: Boolean = false
+  ): Frag =
+    form(
+      method := "post",
+      action := actionUrl,
+      cls := (if (confirmation.nonEmpty) "menu-action-form confirmation-form"
+              else "menu-action-form"),
+      confirmation.fold(frag())(message => attr("data-confirm") := message),
+      input(tpe := "hidden", name := "csrf_token", value := csrfToken),
+      button(
+        cls := s"menu-action${if (danger) " danger-action" else ""}",
+        tpe := "submit",
+        span(cls := "action-glyph", aria.hidden := "true", icon),
+        span(accessibleName)
       )
     )
 
@@ -85,16 +124,16 @@ private[templates] trait BrowserTemplateSupport {
     details(
       cls := "overflow-menu",
       detailsSummary(
-        cls := "icon-action overflow-trigger",
+        cls := "icon-action has-label overflow-trigger",
         aria.label := accessibleName,
         attr("title") := accessibleName,
         span(cls := "action-glyph", aria.hidden := "true", "⋯"),
-        span(cls := "sr-only", accessibleName)
+        span(cls := "action-label", "More")
       ),
       div(
         cls := "overflow-actions",
         attr("role") := "group",
-        actionTray(actions*)
+        actions
       )
     )
 

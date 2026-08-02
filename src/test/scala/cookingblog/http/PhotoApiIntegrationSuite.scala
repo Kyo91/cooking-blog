@@ -94,6 +94,11 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
           )
         )
         fallbackColor <- responseColor(fallback)
+        direct <- context.app.run(
+          auth.request(
+            Request[IO](GET, Uri.unsafeFromString(s"/media/$firstPhotoId?variant=display"))
+          )
+        )
         download <- context.app.run(
           auth.request(
             Request[IO](
@@ -193,6 +198,14 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
         assertEquals(storedAfterUpload.size, 2)
         assertEquals(fallback.status, Status.Ok)
         assertEquals(fallbackColor, Color.BLUE)
+        assertEquals(
+          fallback.headers.get(CIString("Cache-Control")).map(_.head.value),
+          Some("private, no-cache")
+        )
+        assertEquals(
+          direct.headers.get(CIString("Cache-Control")).map(_.head.value),
+          Some("private, max-age=31536000, immutable")
+        )
         assertEquals(download.status, Status.Ok)
         assertEquals(downloadColor, Color.RED)
         assertEquals(
@@ -206,6 +219,10 @@ final class PhotoApiIntegrationSuite extends CatsEffectSuite {
         assertEquals(captioned.status, Status.Ok)
         assertEquals(selected.status, Status.Ok)
         assertEquals(explicitColor, Color.RED)
+        assertEquals(
+          explicit.headers.get(CIString("Cache-Control")).map(_.head.value),
+          Some("private, no-cache")
+        )
         assertEquals(invalid.status, Status.UnsupportedMediaType)
         assertEquals(oversized.status, Status.PayloadTooLarge)
         assertEquals(deleteFirst.status, Status.NoContent)

@@ -134,7 +134,7 @@ private[templates] trait BrowserHomeTemplates extends BrowserTemplateSupport {
             cls := "recipe-card-link",
             href := s"/recipes/${id(recipe.id)}",
             img(
-              src := s"/media/recipes/${id(recipe.id)}/primary?variant=thumbnail",
+              src := s"/media/recipes/${id(recipe.id)}/primary?variant=thumbnail&v=${recipe.updatedAt.toEpochMilli}",
               alt := "",
               attr("loading") := "lazy"
             ),

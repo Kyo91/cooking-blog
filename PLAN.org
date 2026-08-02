@@ -909,6 +909,18 @@ updated hero and home-card images, selected-primary indicators, caption flow,
 overflow placement, touch targets, focus behavior, and desktop/mobile photo
 hierarchy to pass automated browser coverage and Railway staging UAT.
 
+Local remediation (2026-08-02): recipe-primary media now revalidates while
+immutable photo-ID media retains its one-year cache policy. Versioned hero and
+home-card URLs, effective fallback-primary state, visible primary badges, and
+byte-level browser assertions keep selected images consistent. Cooking history
+uses display-sized photo galleries, read-first captions with focused
+edit-on-demand disclosure, visibly labeled action docks, and collision-safe
+labeled overflow rows. The add-source editor is collapsed behind a native
+disclosure, and mobile detail actions stack below long titles. The clean 52-test
+Scala/PostgreSQL suite passes against an isolated database, and all nine browser
+workflows pass at phone, tablet, and desktop sizes. Phase 10 remains open for the
+five Railway staging manual UAT checks.
+
 Exit criterion: the home, recipe-detail, meal, and photo workflows are
 comfortable and legible on a phone without text wrapping or crowded action
 rows; users can download an authenticated original photo in one action; photo

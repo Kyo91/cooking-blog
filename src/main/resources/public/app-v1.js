@@ -60,6 +60,56 @@
     if (event.target.matches(".remove-source")) event.target.closest(".source-row").remove();
   });
 
+  const placeOverflow = (menu) => {
+    const panel = menu.querySelector(".overflow-actions");
+    const trigger = menu.querySelector("summary");
+    if (!panel || !trigger) return;
+    menu.classList.remove("place-up", "align-start");
+    let panelBox = panel.getBoundingClientRect();
+    const triggerBox = trigger.getBoundingClientRect();
+    const edge = 16;
+    const roomBelow = window.innerHeight - triggerBox.bottom - edge;
+    const roomAbove = triggerBox.top - edge;
+    if (panelBox.height > roomBelow && roomAbove > roomBelow) {
+      menu.classList.add("place-up");
+    }
+    panelBox = panel.getBoundingClientRect();
+    if (panelBox.left < edge) {
+      menu.classList.add("align-start");
+    }
+  };
+
+  document.querySelectorAll(".overflow-menu").forEach((menu) => {
+    menu.addEventListener("toggle", () => {
+      if (menu.open) placeOverflow(menu);
+    });
+  });
+
+  document.querySelectorAll("[data-caption-editor]").forEach((editor) => {
+    const trigger = editor.querySelector(".caption-edit-trigger");
+    trigger?.addEventListener("click", () => {
+      window.setTimeout(() => {
+        if (editor.open) editor.querySelector("input[name='comment']")?.select();
+      }, 0);
+    });
+    editor.addEventListener("toggle", () => {
+      if (editor.open) {
+        window.setTimeout(
+          () => editor.querySelector("input[name='comment']")?.select(),
+          100
+        );
+      }
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    document.querySelectorAll(".overflow-menu[open]").forEach(placeOverflow);
+  });
+
+  window.addEventListener("scroll", () => {
+    document.querySelectorAll(".overflow-menu[open]").forEach((menu) => menu.removeAttribute("open"));
+  }, { passive: true });
+
   document.addEventListener("change", (event) => {
     if (event.target.matches("[name='source_kind']")) syncSourceRow(event.target.closest(".source-row"));
     if (event.target.matches("#reference-kind")) {
@@ -86,6 +136,13 @@
     document.querySelectorAll(".overflow-menu[open]").forEach((menu) => {
       if (menu !== current) menu.removeAttribute("open");
     });
+    const overflowTrigger = event.target.closest(".overflow-trigger");
+    if (overflowTrigger) {
+      window.requestAnimationFrame(() => {
+        const menu = overflowTrigger.closest(".overflow-menu");
+        if (menu?.open) placeOverflow(menu);
+      });
+    }
   });
 
   document.addEventListener("keydown", (event) => {

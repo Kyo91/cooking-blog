@@ -292,3 +292,21 @@ Deliver this follow-up in three reviewable changes:
 The work is complete when all five manual UAT checks pass on Railway staging
 and automated coverage proves the primary image changes rather than merely
 remaining visible.
+
+* Local verification status
+
+Implemented and verified locally on 2026-08-02. The mutable primary alias uses
+revalidation, rendered aliases are versioned from the recipe update timestamp,
+and the browser suite compares selected-photo bytes as well as URL versions and
+visible primary state. Photo figures are now the dominant cooking-history
+content; captions are read-first; photo actions have persistent short labels;
+and delete actions use bounded, collision-safe menu rows. Long mobile titles no
+longer compete with action controls, and the rarely used add-source form is
+collapsed without hiding existing source status.
+
+The clean Scala/PostgreSQL suite passes 52 tests against an isolated database,
+and all nine Playwright workflows pass, including 390x844, 768x1024, and desktop
+menu placement plus caption focus, touch targets, selected-primary movement,
+hero/home agreement, and responsive screenshots. The remaining completion step
+is to deploy this revision to Railway staging and repeat the five manual UAT
+checks above; Phase 10 therefore remains open.
