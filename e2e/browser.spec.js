@@ -45,6 +45,9 @@ test("recipe form supports a repeatable book source row", async ({ page }) => {
   await page.getByRole("button", { name: "Create recipe" }).click();
   await expect(page.getByRole("heading", { name: title })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Example Cookbook, p. 42" })).toBeVisible();
+  const historyHeading = page.getByRole("heading", { name: "Cooking history" });
+  const sourcesHeading = page.getByRole("heading", { name: "Sources and imports" });
+  expect((await historyHeading.boundingBox()).y).toBeLessThan((await sourcesHeading.boundingBox()).y);
 });
 
 test("phone viewport keeps primary controls reachable", async ({ page }) => {

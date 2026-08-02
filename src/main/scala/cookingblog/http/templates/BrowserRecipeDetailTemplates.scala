@@ -131,6 +131,7 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
           )
         ),
         primary,
+        section(htmlH2("Cooking history"), meals),
         section(
           htmlH2("Sources and imports"),
           div(htmlId := "references", references),
@@ -180,8 +181,7 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
               )
             )
           )
-        ),
-        section(htmlH2("Cooking history"), meals)
+        )
       )
     )
   }

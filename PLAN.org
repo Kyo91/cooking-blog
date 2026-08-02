@@ -833,7 +833,7 @@ strict compilation, all 45 Scala/PostgreSQL tests, and an actual
 =SCRAPE_ENABLED=false sbt run= startup were verified. PostgreSQL-backed suites
 now run sequentially because they deliberately share one development schema.
 
-** TODO Phase 10: Mobile-first browser experience overhaul
+** DONE Phase 10: Mobile-first browser experience overhaul
 
 - Replace wordy, wrapping action controls with a coherent icon-first action
   system. Every control must retain a programmatic accessible name, visible
@@ -918,8 +918,15 @@ edit-on-demand disclosure, visibly labeled action docks, and collision-safe
 labeled overflow rows. The add-source editor is collapsed behind a native
 disclosure, and mobile detail actions stack below long titles. The clean 52-test
 Scala/PostgreSQL suite passes against an isolated database, and all nine browser
-workflows pass at phone, tablet, and desktop sizes. Phase 10 remains open for the
-five Railway staging manual UAT checks.
+workflows pass at phone, tablet, and desktop sizes.
+
+Railway staging UAT (2026-08-02): all five manual checks passed. Overflow menus
+remain visible, action meaning is discoverable without hover, captions are
+read-first and editable on demand, primary-photo state is consistent across
+detail and home views, and the mobile photo hierarchy remains usable. The final
+recipe-detail refinement places Cooking history before Sources and imports; its
+focused browser regression passed and deployment
+`214f8f35-d965-4b4d-b81a-68724adf4982` reached Railway staging successfully.
 
 Exit criterion: the home, recipe-detail, meal, and photo workflows are
 comfortable and legible on a phone without text wrapping or crowded action
