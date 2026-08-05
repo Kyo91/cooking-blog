@@ -1,0 +1,105 @@
+#+title: Phase 12 Photo Migration, Backups, and Recovery Plan
+
+* Purpose
+
+Move existing laptop photo variants from the local =PhotoStore= to the Phase 11
+S3-compatible =PhotoStore= without changing database photo metadata, losing
+bytes, or removing the local rollback source. Establish an independently tested
+database-and-object recovery procedure for the cloud deployment.
+
+* Scope and invariants
+
+- A photo's database =storage_key= remains the identity of its original,
+  display, and thumbnail variants. The migration only copies objects; it never
+  rewrites photo records or storage keys.
+- Every destination object must have the expected byte size and SHA-256 digest.
+- The command is idempotent, resumable, and reports rather than repairs missing
+  source objects or destination-only orphan objects. Checksum-mismatched
+  destination variants remain unchanged unless an operator explicitly selects
+  =--repair=; a repair overwrites only that variant and verifies it again.
+- The UI keeps permanent-deletion semantics. Backup retention is recovery-only,
+  not a user-visible soft-delete feature.
+- Source local files remain intact until the documented rollback window and
+  restore rehearsal have both passed.
+
+* Work packages
+
+** 1. Migration command
+
+Add a dedicated operator command with =--dry-run=, =--resume=, and =--json=
+modes. It must:
+
+- Load the inventory of photo storage keys from PostgreSQL.
+- Derive expected original, display, and thumbnail variants through the existing
+  =PhotoStore= layout rather than duplicating object-key rules.
+- Read each local source variant, calculate SHA-256 and byte size while copying
+  it to the configured S3 destination, then read/verify the destination.
+- Write a durable manifest/checkpoint outside the local photo volume so a later
+  =--resume= run skips already verified variants but retries incomplete work.
+  Version and bind the manifest to the migration direction plus stable source
+  and destination identities, and reject incompatible reuse before photo I/O.
+- Produce human-readable and machine-readable summaries containing copied,
+  repaired, already-verified, missing-source, missing-destination, mismatched,
+  failed, and destination-orphan counts. Include sanitized per-variant
+  diagnostics with storage key, variant, operation, and stable error category;
+  do not log exception text, credentials, or object contents.
+- Preserve a mismatched destination by default. When =--repair= is selected,
+  overwrite that destination variant from the source, re-read it, and require
+  its size and SHA-256 digest to match before recording success.
+- Never delete from either backend. A non-zero exit code is required for any
+  mismatch, missing source, failed copy, or verification failure.
+
+Completion: unit and integration coverage proves all three variants, reruns,
+interrupted-copy resume, manifest scope rejection, checksum mismatch and repair,
+missing source, sanitized diagnostics, and JSON reporting.
+
+** 2. Verification and operational rehearsals
+
+Run the command against a fixture local store and the pinned MinIO profile.
+Confirm database data is unchanged, every object is readable using the S3
+backend, and a second execution makes no writes for verified variants. Preserve
+the generated manifest as part of the cutover record.
+
+** 3. Maintenance-window cutover
+
+1. Create and verify a PostgreSQL backup; record backup identifier and time.
+2. Announce the maintenance window and stop the application, blocking all photo
+   writes.
+3. Run a final resumable migration and full verification pass.
+4. Set =PHOTO_BACKEND=s3= and the selected bucket, prefix, region, credentials,
+   endpoint, and addressing configuration; retain the local volume read-only.
+5. Start one pinned application image. Verify authenticated readiness, login,
+   search, representative original/display/thumbnail reads, upload, deletion,
+   and restart before reopening writes.
+
+** 4. Rollback
+
+Record the previous image, local storage path/volume, S3 bucket and prefix,
+configuration revision, and rollback-window expiry. During that window, rollback
+means restoring the prior local photo backend configuration and restarting the
+previous known-good image. Do not delete local source photos or S3 copies.
+
+** 5. Backup and retention policy
+
+Before production cutover, select and document the managed PostgreSQL PITR
+retention period, owner, independent periodic export destination, object backup
+or bucket-versioning approach, encryption, and recovery retention window. Add
+alerts for backup/export failure and conservative object-storage cost limits.
+The scheduled verification/export process remains outside the application
+runtime.
+
+** 6. Isolated restore rehearsal
+
+Record the application image, Flyway version, PostgreSQL backup identifier,
+object-storage bucket/prefix, and migration manifest together. Restore database
+and object data into a separate isolated environment, then verify login,
+recipe/reference/meal/photo counts, search results, and sampled original,
+display, and thumbnail reads. Record elapsed recovery time, discrepancies, and
+manual steps in the runbook.
+
+* Acceptance gates
+
+Phase 12 is complete only when all laptop photo variants are checksum-verified
+in object storage; the rollback procedure and retention window are documented;
+backup/export and cost alerts are configured; and an isolated combined
+database-plus-photo restore has succeeded.
