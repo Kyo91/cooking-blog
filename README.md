@@ -110,6 +110,50 @@ S3_TEST_ENDPOINT=http://127.0.0.1:9000 \
 The laptop phase deliberately has no automated photo or PostgreSQL backups.
 Deleting a photo, meal, or recipe permanently removes its photo files.
 
+### Photo migration operator command
+
+The default direction copies an existing local photo directory into the
+configured S3 backend without changing database metadata. Set `PHOTO_BACKEND=s3`,
+the normal `PHOTO_S3_*` configuration, and `PHOTO_MIGRATION_SOURCE_DIRECTORY`
+to the old directory. The manifest path defaults to
+`./data/photo-migration-manifest.json`; set `PHOTO_MIGRATION_MANIFEST` to keep
+it outside the local photo directory. The versioned manifest is bound to the
+direction and normalized local/S3 source and destination identities. A
+`--resume` run rejects a manifest from another direction, local directory,
+endpoint, bucket, or prefix before reading photo data. It never deletes bytes
+or database rows.
+
+```sh
+sbt "runMain cookingblog.PhotoMigrationCommand --resume --json"
+```
+
+To restore from the configured S3 backend into a local directory, set
+`PHOTO_MIGRATION_TARGET_DIRECTORY`, use a separate manifest, and select the
+explicit reverse direction:
+
+```sh
+PHOTO_MIGRATION_MANIFEST=./data/photo-restore-manifest.json \
+  sbt "runMain cookingblog.PhotoMigrationCommand --direction s3-to-local --resume --json"
+```
+
+`--direction=local-to-s3` and `--direction=s3-to-local` are equivalent forms;
+the default is `local-to-s3`. Both directions use the same checksum verification,
+resume manifest, dry-run, JSON summary, and no-delete/no-database-write rules.
+
+Use `--dry-run` to report missing source/destination variants and mismatches
+without writes. Existing destination bytes with the wrong checksum are
+preserved by default. After reviewing the reported storage key and variant,
+use `--repair` to explicitly authorize overwriting only mismatched destination
+variants; each repaired variant is re-read and checksum-verified before it is
+recorded in the manifest. `--repair` never deletes source or destination bytes
+and never writes to PostgreSQL.
+
+Human and JSON output retain aggregate counts and include one sanitized
+diagnostic per affected variant with `storageKey`, `variant`, `operation`, and
+stable `category` fields. Exception messages, credentials, and object contents
+are not included. A non-zero exit indicates missing source objects, copy or
+read failures, an unverified repair, or checksum mismatches.
+
 ## Laptop release
 
 The production-like laptop release is built as the versioned

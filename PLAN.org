@@ -936,7 +936,7 @@ viewport; captions are read-first and editable on demand; and the selected or
 fallback primary photo is visibly identified and immediately consistent on the
 recipe detail and home pages.
 
-** TODO Phase 11: S3-compatible photo storage
+** DONE Phase 11: S3-compatible photo storage
 
 - Implement =S3PhotoStore= with the existing opaque layout:
   =<prefix>/<storageKey>/<variant>.<extension>=. Upload the already processed
@@ -965,7 +965,7 @@ recipe detail and home pages.
   Verify custom endpoint, signing region, addressing style, listing, and delete
   behavior rather than assuming complete S3 parity.
 
-Current progress: the AWS SDK v2 asynchronous client is pinned and backs an
+Implemented with the AWS SDK v2 asynchronous client, which is pinned and backs an
 =S3PhotoStore= with metadata-rich immutable writes, idempotent prefix deletion,
 paginated listing, aged-orphan support, bounded concurrent operations, and a
 cheap bucket-access readiness check. An opt-in pinned MinIO Compose profile
@@ -973,7 +973,8 @@ creates a development bucket and non-root application credential. The shared
 contract suite passes locally and against that endpoint, including custom
 endpoint, signing-region, path-style, upload/read/overwrite/list/delete
 behavior. The unchanged full HTTP/browser photo flows and provider smoke tests
-remain to be run before this phase can meet its exit criterion.
+pass against the S3-compatible backend, and restart verification confirms an
+uploaded photo remains readable without a local photo volume attached.
 
 Exit criterion: the unchanged photo API and browser flows pass against both
 backends, and an uploaded photo remains readable after an application restart
@@ -984,7 +985,10 @@ with no local photo volume attached.
 - Build an idempotent migration command that inventories database storage keys,
   copies every local original/display/thumbnail object, verifies size and a
   content checksum, reports missing or orphaned data, and can resume safely.
-  Provide dry-run and machine-readable summary modes.
+  Bind versioned resume manifests to direction and stable endpoint identities,
+  preserve checksum mismatches unless explicitly authorized with a verified
+  repair mode, and provide dry-run plus actionable sanitized human and
+  machine-readable diagnostics.
 - Use a maintenance-window cutover for this small deployment: take a database
   backup, stop photo writes, run the final sync and verification, switch the
   storage backend, then exercise representative media before reopening writes.

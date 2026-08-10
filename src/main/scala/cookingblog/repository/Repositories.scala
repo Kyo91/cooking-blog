@@ -37,6 +37,7 @@ trait PhotoRepository[F[_]] {
   def delete(id: PhotoId): F[Boolean]
   def listByMeal(mealId: MealId): F[List[Photo]]
   def listByRecipe(recipeId: RecipeId): F[List[Photo]]
+  def listAll: F[List[Photo]]
   def listStorageKeys: F[List[StorageKey]]
   def findPrimaryForRecipe(recipeId: RecipeId): F[Option[Photo]]
 }
@@ -448,6 +449,14 @@ private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
       join meals m on m.id = p.meal_id
       where m.recipe_id = ${RecipeId.value(recipeId)}
       order by m.cooked_at desc, p.created_at desc, p.id
+    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
+
+  override def listAll: ConnectionIO[List[Photo]] =
+    sql"""
+      select id, meal_id, storage_key, original_filename, content_type, byte_size,
+             width, height, comment, created_at, updated_at
+      from photos
+      order by id
     """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
 
   override def listStorageKeys: ConnectionIO[List[StorageKey]] =
