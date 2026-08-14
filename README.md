@@ -42,6 +42,13 @@ Run checks:
 sbt scalafmtCheckAll test
 ```
 
+## Branch and release workflow
+
+`main` automatically deploys to production. Treat it as the release branch.
+Create feature branches from `staging` and open their pull requests against
+`staging`, not `main`. When the staged changes are ready for production, merge
+`staging` into `main` through a release pull request.
+
 ## Browser enhancements
 
 The browser UI is server-rendered HTML. HTMX is vendored locally and served from

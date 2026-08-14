@@ -10,6 +10,14 @@ Current feature-branch staging target: Railway project
 Use this target explicitly for feature deployments; do not use the separate
 =cooking-blog= project.
 
+## Source-control workflow
+
+The GitHub `main` branch automatically deploys to production. It is therefore
+the release branch. Create each feature branch from `staging` and open its pull
+request against `staging`, rather than `main`. Merge `staging` into `main` only
+through a release pull request when the staged changes are approved for
+production.
+
 ## Prerequisites
 
 - Push this repository, including `Dockerfile` and `railway.json`, to the
