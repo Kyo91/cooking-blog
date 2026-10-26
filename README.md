@@ -44,11 +44,23 @@ sbt scalafmtCheckAll test
 
 ## Browser enhancements
 
-The browser UI is server-rendered HTML. HTMX is vendored locally and served from
-an authenticated static route; `app-v1.js` is the only application JavaScript
-asset. It is intentionally limited to search/source-row glue, accessibility
-focus handling, confirmation dialogs, photo previews, and multipart upload
-progress. Scala.js remains a deferred option if browser-side state becomes
+The browser UI is server-rendered HTML. HTMX 4.0.0 is pinned and vendored locally
+from the `htmx.org@4.0.0` npm distribution (`dist/htmx.min.js`) and served from
+the authenticated `/static/htmx-4.0.0.min.js` route. Its BSD-0-Clause license
+is retained alongside the asset as `htmx.LICENSE`. The vendored file SHA-256 is
+`e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f`.
+
+Search attributes are attached directly to their controls (no implicit
+inheritance), and application listeners use HTMX 4 colon-separated events and
+`detail.ctx`. The `htmx-config` meta tag preserves HTMX 2 behavior by not swapping
+`4xx`/`5xx` responses over existing results. No compatibility extensions are
+required. See the [upstream migration guide](https://four.htmx.org/docs/whats-new-in-htmx-4/).
+
+For browser regression tests, start the application and run `bun run test:browser`.
+
+`app-v1.js` is the only application JavaScript asset. It is intentionally limited
+to search/source-row glue, accessibility focus handling, confirmation dialogs,
+photo previews, and multipart upload progress. Scala.js remains a deferred option if browser-side state becomes
 substantially more complex.
 
 The checked-in API contract is in

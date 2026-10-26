@@ -202,6 +202,10 @@ private[templates] trait BrowserTemplateSupport {
       head(
         meta(charset := "utf-8"),
         meta(name := "viewport", attr("content") := "width=device-width, initial-scale=1"),
+        meta(
+          name := "htmx-config",
+          attr("content") := """{"noSwap":[204,304,"4xx","5xx"]}"""
+        ),
         title(s"$titleText · Cooking Blog"),
         link(rel := "stylesheet", href := "/static/app-v1.css")
       ),
@@ -210,7 +214,7 @@ private[templates] trait BrowserTemplateSupport {
         content,
         Option.when(includeScript)(
           frag(
-            script(src := "/static/htmx-2.0.4.min.js", defer),
+            script(src := "/static/htmx-4.0.0.min.js", defer),
             script(src := "/static/app-v1.js", defer)
           )
         )

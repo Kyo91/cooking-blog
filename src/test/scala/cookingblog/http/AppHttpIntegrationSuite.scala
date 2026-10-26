@@ -55,6 +55,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
           Request[IO](GET, uri"/media/00000000-0000-0000-0000-000000000000/download")
         )
         anonymousStatic <- app.run(Request[IO](GET, uri"/static/app-v1.js"))
+        anonymousHtmx <- app.run(Request[IO](GET, uri"/static/htmx-4.0.0.min.js"))
         anonymousLive <- app.run(Request[IO](GET, uri"/health/live"))
         anonymousHealth <- app.run(Request[IO](GET, uri"/health/ready"))
         anonymousMetrics <- app.run(Request[IO](GET, uri"/metrics"))
@@ -105,6 +106,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assertEquals(anonymousMedia.status, Status.SeeOther)
         assertEquals(anonymousDownload.status, Status.SeeOther)
         assertEquals(anonymousStatic.status, Status.SeeOther)
+        assertEquals(anonymousHtmx.status, Status.SeeOther)
         assertEquals(anonymousLive.status, Status.SeeOther)
         assertEquals(anonymousHealth.status, Status.SeeOther)
         assertEquals(anonymousMetrics.status, Status.SeeOther)
@@ -189,11 +191,12 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         )
         htmx <- app.run(
           withCookies(
-            Request[IO](GET, uri"/static/htmx-2.0.4.min.js"),
+            Request[IO](GET, uri"/static/htmx-4.0.0.min.js"),
             sessionCookie,
             csrfCookie
           )
         )
+        htmxBody <- htmx.as[String]
         appScript <- app.run(
           withCookies(Request[IO](GET, uri"/static/app-v1.js"), sessionCookie, csrfCookie)
         )
@@ -209,6 +212,9 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       } yield {
         assertEquals(home.status, Status.Ok)
         assert(homeBody.contains("id=\"recipe-search\""))
+        assert(homeBody.contains("/static/htmx-4.0.0.min.js"))
+        assert(!homeBody.contains("htmx-2."))
+        assert(homeBody.contains("name=\"htmx-config\""))
         assert(homeBody.contains("id=\"recipe-sort\""))
         assert(homeBody.contains("Most recently cooked"))
         assert(homeBody.contains("id=\"recipe-results\""))
@@ -219,6 +225,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
         assert(newRecipeBody.contains("id=\"add-recipe-source\""))
         assertEquals(search.status, Status.Ok)
         assertEquals(htmx.status, Status.Ok)
+        assert(htmxBody.contains("4.0.0"))
         assertEquals(appScript.status, Status.Ok)
         assertEquals(invalidRecipe.status, Status.BadRequest)
         assert(invalidRecipeBody.contains("form-error"))

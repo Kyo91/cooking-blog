@@ -33,6 +33,75 @@ test("search query carries into the new recipe form", async ({ page }) => {
   await expect(page.getByLabel("Title")).toHaveValue("browser test recipe");
 });
 
+test("HTMX 4 filters and sorts results without navigating", async ({ page }) => {
+  const prefix = `Htmx ${Date.now()}`;
+  await signIn(page);
+  await createRecipe(page, `${prefix} Zucchini`);
+  await createRecipe(page, `${prefix} Apples`);
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() => window.htmx?.version)).toBe("4.0.0");
+  await page.evaluate(() => { window.searchPageMarker = true; });
+
+  const searchResponse = page.waitForResponse((response) =>
+    response.url().includes("/recipes/search?") && response.status() === 200
+  );
+  await page.locator("#recipe-search").fill(prefix);
+  await searchResponse;
+  await expect(page.locator(".recipe-card")).toHaveCount(2);
+  await expect(page).toHaveURL(new RegExp(`q=${encodeURIComponent(prefix)}`));
+
+  const sortResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/recipes/search" && url.searchParams.get("sort") === "title";
+  });
+  await page.locator("#recipe-sort").selectOption("title");
+  const response = await sortResponse;
+  expect(new URL(response.url()).searchParams.get("q")).toBe(prefix);
+  await expect(page.locator(".recipe-card h2")).toHaveText([`${prefix} Apples`, `${prefix} Zucchini`]);
+  await expect(page).toHaveURL(/sort=title/);
+  expect(await page.evaluate(() => window.searchPageMarker)).toBe(true);
+});
+
+for (const status of [422, 500]) {
+  test(`search preserves results and URL on HTTP ${status}`, async ({ page }) => {
+    await signIn(page);
+    const previousResults = await page.locator("#recipe-results").innerHTML();
+    const previousUrl = page.url();
+    await page.route("**/recipes/search?**", (route) => route.fulfill({
+      status,
+      contentType: "text/html",
+      body: "<p>Search service error</p>"
+    }));
+    await page.evaluate(() => {
+      document.body.addEventListener("htmx:finally:request", () => {
+        window.searchRequestFinished = true;
+      }, { once: true });
+    });
+    await page.locator("#recipe-search").fill("failed search");
+    await expect.poll(() => page.evaluate(() => window.searchRequestFinished)).toBe(true);
+    expect(await page.locator("#recipe-results").innerHTML()).toBe(previousResults);
+    expect(page.url()).toBe(previousUrl);
+  });
+}
+
+test("after-swap focus handling uses the response target, not the search input", async ({ page }) => {
+  await signIn(page);
+  await page.route("**/recipes/search?**", (route) => route.fulfill({
+    contentType: "text/html",
+    body: '<label>Correct this field<input id="swapped-invalid" aria-invalid="true"></label>'
+  }));
+  await page.locator("#recipe-search").fill("focus test");
+  await expect(page.locator("#swapped-invalid")).toBeFocused();
+
+  await page.unroute("**/recipes/search?**");
+  await page.route("**/recipes/search?**", (route) => route.fulfill({
+    contentType: "text/html",
+    body: '<p id="swapped-alert" role="alert" tabindex="-1">Search notice</p>'
+  }));
+  await page.locator("#recipe-search").fill("alert test");
+  await expect(page.locator("#swapped-alert")).toBeFocused();
+});
+
 test("recipe form supports a repeatable book source row", async ({ page }) => {
   const title = `Browser source ${Date.now()}`;
   await signIn(page);
