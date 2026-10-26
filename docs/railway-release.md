@@ -65,7 +65,7 @@ PUBLIC_ORIGIN=https://<generated-or-custom-railway-domain>
 PHOTO_BACKEND=s3
 PHOTO_S3_BUCKET=${{photos.BUCKET}}
 PHOTO_S3_PREFIX=cooking-blog/photos
-PHOTO_S3_REGION=${{photos.REGION}}
+PHOTO_S3_REGION=auto
 PHOTO_S3_ENDPOINT=${{photos.ENDPOINT}}
 PHOTO_S3_PATH_STYLE=false
 PHOTO_S3_CREDENTIALS_MODE=static
@@ -93,6 +93,13 @@ SCRAPE_USER_AGENT=CookingBlog/0.1 (+personal recipe archive)
 Enter `AUTH_PASSWORD` through Railway's secret variable UI; never commit it,
 place it in a `.env` file, or paste it into deployment logs. Railway Bucket
 credentials are supplied by references and rotate with the bucket credentials.
+Use `auto` as the S3 **signing** region, not the bucket's physical deployment
+region (such as `sjc`). The `photos.REGION` reference may resolve to that physical
+region even when `railway bucket credentials` specifies `auto`. Verify the
+resolved endpoint, bucket, access key, and secret against the bucket's current
+credentials without printing secret values. A stale secret or incorrect signing
+region causes `SignatureDoesNotMatch`, failed image streams/downloads, and a
+`503` authenticated readiness response; it does not mean the objects are lost.
 
 ## Deploy and verify
 
