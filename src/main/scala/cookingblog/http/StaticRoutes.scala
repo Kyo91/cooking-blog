@@ -8,7 +8,7 @@ import org.http4s.headers.`Content-Type`
 /** Authenticated, classpath-backed browser assets. */
 final class StaticRoutes(classLoader: ClassLoader) {
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "static" / "htmx-2.0.4.min.js" =>
+    case GET -> Root / "static" / "htmx-4.0.0.min.js" =>
       asset("public/htmx.min.js", MediaType.application.javascript)
     case GET -> Root / "static" / "app-v1.js" =>
       asset("public/app-v1.js", MediaType.application.javascript)

@@ -24,8 +24,9 @@
     if (output && !output.textContent) output.textContent = "Please correct the highlighted field.";
   }, true);
 
-  document.body.addEventListener("htmx:afterRequest", (event) => {
-    if (!event.target.matches("#recipe-search, #recipe-sort") || !event.detail.successful) return;
+  document.body.addEventListener("htmx:after:request", (event) => {
+    const { sourceElement, response } = event.detail.ctx;
+    if (!sourceElement.matches("#recipe-search, #recipe-sort") || !response.raw.ok) return;
     const query = document.querySelector("#recipe-search")?.value || "";
     const sort = document.querySelector("#recipe-sort")?.value || "recent";
     window.history.replaceState(null, "", `/?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}`);
@@ -203,10 +204,11 @@
     });
   }
 
-  document.body.addEventListener("htmx:afterSwap", (event) => {
-    const invalid = firstInvalid(event.target);
+  document.body.addEventListener("htmx:after:swap", (event) => {
+    const target = event.detail.ctx.target;
+    const invalid = firstInvalid(target);
     if (invalid) invalid.focus();
-    const alert = event.target.querySelector("[role='alert']");
+    const alert = target.querySelector("[role='alert']");
     if (alert) alert.focus();
   });
 
