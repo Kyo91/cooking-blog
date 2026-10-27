@@ -1,16 +1,14 @@
 package cookingblog.scraping
 
 import cats.effect.std.Random
-import cats.effect.{Clock, IO, Ref, Resource}
+import cats.effect.{Clock, IO, Ref}
 import cats.syntax.all.*
-import ciris.Secret
-import cookingblog.config.{DatabaseConfig, ScrapeConfig}
-import cookingblog.database.Database
+import cookingblog.config.ScrapeConfig
 import cookingblog.domain.*
 import cookingblog.repository.DoobieRepositories
 import doobie.Transactor
 import doobie.implicits.*
-import munit.CatsEffectSuite
+import cookingblog.testing.PostgresIntegrationSuite
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
 
@@ -18,7 +16,7 @@ import java.time.Instant
 import java.util.UUID
 import scala.concurrent.duration.*
 
-final class ScrapeWorkerIntegrationSuite extends CatsEffectSuite {
+final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
   given Logger[IO] = NoOpLogger[IO]
 
   test("a durable pending job completes after the worker starts later") {
@@ -241,21 +239,6 @@ final class ScrapeWorkerIntegrationSuite extends CatsEffectSuite {
       maximumRetryDelay = 1.second,
       userAgent = "CookingBlogTest/1"
     )
-
-  private val databaseConfig =
-    DatabaseConfig(
-      sys.env.getOrElse(
-        "DATABASE_URL",
-        "jdbc:postgresql://localhost:5432/cooking_blog"
-      ),
-      sys.env.getOrElse("DATABASE_USER", "cooking_blog"),
-      Secret(sys.env.getOrElse("DATABASE_PASSWORD", "cooking_blog_dev")),
-      poolSize = 2
-    )
-
-  private val database: Resource[IO, Transactor[IO]] =
-    Resource.eval(Database.migrate(databaseConfig)) *>
-      Database.transactor(databaseConfig)
 
   private final case class TestIds(
       recipeId: RecipeId,

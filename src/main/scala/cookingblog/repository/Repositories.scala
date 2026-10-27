@@ -14,7 +14,20 @@ import java.util.UUID
 trait RecipeRepository[F[_]] {
   def create(recipe: Recipe): F[Unit]
   def find(id: RecipeId): F[Option[Recipe]]
-  def update(recipe: Recipe): F[Boolean]
+
+  /** Existing-recipe mutations lock this row before reading/merging or changing child rows. Keep
+    * the lock, source writes, and projection rebuilds in the same service transaction. Acquire
+    * recipe locks before meal/photo/reference/document/job locks. New recipes are exclusively owned
+    * by their creating transaction. Do not hold locks across external I/O.
+    */
+  def findForUpdate(id: RecipeId): F[Option[Recipe]]
+  def updateDetails(
+      id: RecipeId,
+      title: String,
+      description: String,
+      updatedAt: Instant
+  ): F[Option[Recipe]]
+  def setPrimaryPhoto(id: RecipeId, photoId: PhotoId, updatedAt: Instant): F[Option[Recipe]]
   def delete(id: RecipeId): F[Boolean]
   def list: F[List[Recipe]]
   def refreshLastMadeAt(id: RecipeId, updatedAt: Instant): F[Boolean]
@@ -301,16 +314,38 @@ private object DoobieRecipeRepository extends RecipeRepository[ConnectionIO] {
       where id = ${RecipeId.value(id)}
     """.query[RecipeRow].option.map(_.map(recipe))
 
-  override def update(recipe: Recipe): ConnectionIO[Boolean] =
+  override def findForUpdate(id: RecipeId): ConnectionIO[Option[Recipe]] =
+    sql"""
+      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+      from recipes
+      where id = ${RecipeId.value(id)}
+      for update
+    """.query[RecipeRow].option.map(_.map(recipe))
+
+  override def updateDetails(
+      id: RecipeId,
+      title: String,
+      description: String,
+      updatedAt: Instant
+  ): ConnectionIO[Option[Recipe]] =
     sql"""
       update recipes
-      set title = ${recipe.title},
-          description = ${recipe.description},
-          primary_photo_id = ${recipe.primaryPhotoId.map(PhotoId.value)},
-          updated_at = ${recipe.updatedAt},
-          last_made_at = ${recipe.lastMadeAt}
-      where id = ${RecipeId.value(recipe.id)}
-    """.update.run.map(_ > 0)
+      set title = $title, description = $description, updated_at = $updatedAt
+      where id = ${RecipeId.value(id)}
+      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+    """.query[RecipeRow].option.map(_.map(recipe))
+
+  override def setPrimaryPhoto(
+      id: RecipeId,
+      photoId: PhotoId,
+      updatedAt: Instant
+  ): ConnectionIO[Option[Recipe]] =
+    sql"""
+      update recipes
+      set primary_photo_id = ${PhotoId.value(photoId)}, updated_at = $updatedAt
+      where id = ${RecipeId.value(id)}
+      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+    """.query[RecipeRow].option.map(_.map(recipe))
 
   override def delete(id: RecipeId): ConnectionIO[Boolean] =
     sql"delete from recipes where id = ${RecipeId.value(id)}".update.run.map(_ > 0)

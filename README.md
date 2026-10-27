@@ -36,10 +36,26 @@ username: cooking_blog
 password: cooking_blog_dev
 ```
 
-Run checks:
+With Docker running, run the Scala checks (no application or Compose PostgreSQL
+service is required):
 
 ```sh
 sbt scalafmtCheckAll test
+```
+
+All database-backed Scala suites use a shared Testcontainers fixture. Each suite
+starts its own disposable `postgres:17.10-alpine` instance on a dynamically
+assigned port, applies Flyway migrations once, and removes the container at
+suite teardown. Tests never connect to the development database and ignore
+`DATABASE_URL`, `DATABASE_USER`, and `DATABASE_PASSWORD`, including for the
+connection used to hold transaction locks. The first run pulls the container
+images if they are not already cached. CI uses the same fixture without a
+separate PostgreSQL service.
+
+To run just the concurrent-write regression suite:
+
+```sh
+sbt --client "testOnly cookingblog.service.ConcurrentWritesIntegrationSuite"
 ```
 
 ## Browser enhancements
