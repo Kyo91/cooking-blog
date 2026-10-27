@@ -2,31 +2,17 @@ package cookingblog.repository
 
 import cats.effect.*
 import cats.syntax.all.*
-import ciris.Secret
-import cookingblog.config.DatabaseConfig
-import cookingblog.database.Database
 import cookingblog.domain.*
 import cookingblog.service.PersistenceService
 import cookingblog.storage.StorageKey
-import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
-import munit.CatsEffectSuite
+import cookingblog.testing.PostgresIntegrationSuite
 
 import java.time.Instant
 import java.util.UUID
 
-final class RepositoryIntegrationSuite extends CatsEffectSuite {
-  private val databaseConfig =
-    DatabaseConfig(
-      sys.env.getOrElse(
-        "DATABASE_URL",
-        "jdbc:postgresql://localhost:5432/cooking_blog"
-      ),
-      sys.env.getOrElse("DATABASE_USER", "cooking_blog"),
-      Secret(sys.env.getOrElse("DATABASE_PASSWORD", "cooking_blog_dev")),
-      poolSize = 2
-    )
+final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
 
   private val baseTime = Instant.parse("2026-07-25T12:00:00Z")
 
@@ -184,9 +170,13 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
         for {
           _ <- DoobieRepositories.recipes.create(recipe)
           readRecipe <- DoobieRepositories.recipes.find(recipeId)
-          recipeUpdated <- DoobieRepositories.recipes.update(
-            recipe.copy(description = "updated", updatedAt = updatedAt)
+          updatedRecipe <- DoobieRepositories.recipes.updateDetails(
+            recipe.id,
+            recipe.title,
+            "updated",
+            updatedAt
           )
+          recipeUpdated = updatedRecipe.nonEmpty
           listedRecipes <- DoobieRepositories.recipes.list
           _ <- DoobieRepositories.meals.create(meal)
           readMeal <- DoobieRepositories.meals.find(mealId)
@@ -474,7 +464,4 @@ final class RepositoryIntegrationSuite extends CatsEffectSuite {
     }
   }
 
-  private val database: Resource[IO, Transactor[IO]] =
-    Resource.eval(Database.migrate(databaseConfig)) *>
-      Database.transactor(databaseConfig)
 }

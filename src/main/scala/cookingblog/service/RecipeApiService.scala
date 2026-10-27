@@ -147,40 +147,37 @@ final class RecipeApiService(
         Left(Validation(Map("body" -> List("must contain a field to update"))))
       )
     } else {
-      transact(recipes.find(id)).flatMap {
-        case None           => IO.pure(Left(NotFound("recipe")))
-        case Some(existing) =>
-          val keywordValidation =
-            input.keywords.fold(IO.pure(Right(None): Either[ApiError, Option[List[String]]])) {
-              raw => validateKeywords(raw).map(_.map(Some(_)))
+      now.flatMap { timestamp =>
+        val program = recipes.findForUpdate(id).flatMap {
+          case None           => NotFound("recipe").asLeft[Recipe].pure[ConnectionIO]
+          case Some(existing) =>
+            val validation = (
+              validateRecipe(
+                input.title.getOrElse(existing.title),
+                input.description.getOrElse(existing.description)
+              ),
+              input.keywords.traverse(validateKeywords)
+            ).tupled
+            validation match {
+              case Left(error) => error.asLeft[Recipe].pure[ConnectionIO]
+              case Right(((title, description), replacementKeywords)) =>
+                recipes.updateDetails(id, title, description, timestamp).flatMap {
+                  case None          => NotFound("recipe").asLeft[Recipe].pure[ConnectionIO]
+                  case Some(updated) =>
+                    (replacementKeywords.traverse_(keywords.replace(id, _)) *>
+                      searchDocuments.rebuildSearchDocument(id, timestamp))
+                      .as(updated.asRight[ApiError])
+                }
             }
-          continue(
-            validateRecipe(
-              input.title.getOrElse(existing.title),
-              input.description.getOrElse(existing.description)
-            ).flatMap(recipe => keywordValidation.map((recipe, _).mapN((_, _))))
-          ) { case ((title, description), replacementKeywords) =>
-            now.flatMap { timestamp =>
-              val updated =
-                existing.copy(
-                  title = title,
-                  description = description,
-                  updatedAt = timestamp
-                )
-              transact(
-                recipes.update(updated) *>
-                  replacementKeywords.traverse_(keywords.replace(id, _)) *>
-                  searchDocuments.rebuildSearchDocument(id, timestamp)
-              ).as(updated).attempt.map(_.leftMap(databaseError))
-            }
-          }
+        }
+        transact(program).attempt.map(_.fold(error => Left(databaseError(error)), identity))
       }
     }
 
   /** Deletes metadata transactionally, then performs idempotent cleanup of its photo objects. */
   def deleteRecipe(id: RecipeId): IO[Either[ApiError, Unit]] = {
     val program =
-      recipes.find(id).flatMap {
+      recipes.findForUpdate(id).flatMap {
         case None =>
           NotFound("recipe").asLeft[List[StorageKey]].pure[ConnectionIO]
         case Some(_) =>
@@ -215,11 +212,11 @@ final class RecipeApiService(
             timestamp
           )
         val program =
-          recipes.find(recipeId).flatMap {
+          recipes.findForUpdate(recipeId).flatMap {
             case None    => NotFound("recipe").asLeft[Meal].pure[ConnectionIO]
             case Some(_) =>
               (meals.create(meal) *>
-                recipes.refreshLastMadeAt(recipeId, timestamp) *>
+                recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
                 searchDocuments.rebuildSearchDocument(recipeId, timestamp))
                 .as(meal.asRight[ApiError])
           }
@@ -274,12 +271,15 @@ final class RecipeApiService(
                     cookedAt = input.cookedAt.getOrElse(existing.cookedAt),
                     updatedAt = timestamp
                   )
-                (meals.update(updated) *>
-                  recipes.refreshLastMadeAt(recipeId, timestamp) *>
-                  searchDocuments.rebuildSearchDocument(recipeId, timestamp))
-                  .as(updated.asRight[ApiError])
+                meals.update(updated).flatMap {
+                  case false => NotFound("meal").asLeft[Meal].pure[ConnectionIO]
+                  case true  =>
+                    (recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
+                      searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                      .as(updated.asRight[ApiError])
+                }
             }
-          transact(program)
+          transactWrite(recipeId)(program)
         }
       }
     }
@@ -300,13 +300,16 @@ final class RecipeApiService(
               .pure[ConnectionIO]
           case Some(_) =>
             photos.listByMeal(mealId).flatMap { storedPhotos =>
-              (meals.delete(mealId) *>
-                recipes.refreshLastMadeAt(recipeId, timestamp) *>
-                searchDocuments.rebuildSearchDocument(recipeId, timestamp))
-                .as(storedPhotos.map(_.storageKey).asRight[ApiError])
+              meals.delete(mealId).flatMap {
+                case false => NotFound("meal").asLeft[List[StorageKey]].pure[ConnectionIO]
+                case true  =>
+                  (recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
+                    searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                    .as(storedPhotos.map(_.storageKey).asRight[ApiError])
+              }
             }
         }
-      transact(program).flatMap(completeDeletion)
+      transactWrite(recipeId)(program).flatMap(completeDeletion)
     }
 
   /** Selects a primary photo only after proving that it belongs to the requested recipe. */
@@ -316,20 +319,17 @@ final class RecipeApiService(
   ): IO[Either[ApiError, Recipe]] =
     now.flatMap { timestamp =>
       val program =
-        (recipes.find(recipeId), photos.find(photoId)).tupled.flatMap {
+        (recipes.findForUpdate(recipeId), photos.find(photoId)).tupled.flatMap {
           case (None, _) =>
             NotFound("recipe").asLeft[Recipe].pure[ConnectionIO]
           case (_, None) =>
             NotFound("photo").asLeft[Recipe].pure[ConnectionIO]
-          case (Some(recipe), Some(photo)) =>
+          case (Some(_), Some(photo)) =>
             meals.find(photo.mealId).flatMap {
               case Some(meal) if meal.recipeId == recipeId =>
-                val updated =
-                  recipe.copy(
-                    primaryPhotoId = Some(photoId),
-                    updatedAt = timestamp
-                  )
-                recipes.update(updated).as(updated.asRight[ApiError])
+                recipes
+                  .setPrimaryPhoto(recipeId, photoId, timestamp)
+                  .map(_.toRight(NotFound("recipe")))
               case _ =>
                 InvalidRelationship("photo does not belong to recipe")
                   .asLeft[Recipe]
@@ -344,7 +344,7 @@ final class RecipeApiService(
       recipeId: RecipeId,
       input: CreateReferenceInput
   ): IO[Either[ApiError, RecipeReference]] =
-    continue(validateReference(input)) { validated =>
+    continue(IO.pure(validateReference(input))) { validated =>
       now.flatMap { timestamp =>
         val reference =
           RecipeReference(
@@ -358,7 +358,7 @@ final class RecipeApiService(
             timestamp
           )
         val program =
-          recipes.find(recipeId).flatMap {
+          recipes.findForUpdate(recipeId).flatMap {
             case None    => NotFound("recipe").asLeft[RecipeReference].pure[ConnectionIO]
             case Some(_) =>
               (references.create(reference) *>
@@ -386,39 +386,43 @@ final class RecipeApiService(
         Left(Validation(Map("body" -> List("must contain a field to update"))))
       )
     } else {
-      transact(references.find(referenceId)).flatMap {
-        case None                                            => IO.pure(Left(NotFound("reference")))
-        case Some(existing) if existing.recipeId != recipeId =>
-          IO.pure(
-            Left(InvalidRelationship("reference does not belong to recipe"))
-          )
-        case Some(existing) =>
-          val merged =
-            CreateReferenceInput(
+      now.flatMap { timestamp =>
+        val program = references.find(referenceId).flatMap {
+          case None => NotFound("reference").asLeft[RecipeReference].pure[ConnectionIO]
+          case Some(existing) if existing.recipeId != recipeId =>
+            InvalidRelationship("reference does not belong to recipe")
+              .asLeft[RecipeReference]
+              .pure[ConnectionIO]
+          case Some(existing) =>
+            val merged = CreateReferenceInput(
               existing.kind.databaseValue,
               input.url.orElse(existing.url),
               input.citation.orElse(existing.citation),
               input.displayName.orElse(existing.displayName)
             )
-          continue(validateReference(merged)) { validated =>
-            now.flatMap { timestamp =>
-              val updated =
-                existing.copy(
+            validateReference(merged) match {
+              case Left(error)      => error.asLeft[RecipeReference].pure[ConnectionIO]
+              case Right(validated) =>
+                val updated = existing.copy(
                   url = validated.url,
                   citation = validated.citation,
                   displayName = validated.displayName,
                   updatedAt = timestamp
                 )
-              val urlChanged =
-                existing.kind == ReferenceKind.Url && existing.url != updated.url
-              val program =
-                references.update(updated) *>
-                  (if (urlChanged) enqueueIfUrl(updated, timestamp)
-                   else ().pure[ConnectionIO]) *>
-                  searchDocuments.rebuildSearchDocument(recipeId, timestamp)
-              transact(program).as(updated).attempt.map(_.leftMap(databaseError))
+                val urlChanged =
+                  existing.kind == ReferenceKind.Url && existing.url != updated.url
+                references.update(updated).flatMap {
+                  case false => NotFound("reference").asLeft[RecipeReference].pure[ConnectionIO]
+                  case true  =>
+                    ((if (urlChanged) enqueueIfUrl(updated, timestamp)
+                      else ().pure[ConnectionIO]) *>
+                      searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                      .as(updated.asRight[ApiError])
+                }
             }
-          }
+        }
+        transactWrite(recipeId)(program).attempt
+          .map(_.fold(error => Left(databaseError(error)), identity))
       }
     }
 
@@ -426,24 +430,21 @@ final class RecipeApiService(
       recipeId: RecipeId,
       referenceId: ReferenceId
   ): IO[Either[ApiError, Unit]] =
-    transact(references.find(referenceId)).flatMap {
-      case None                                              => IO.pure(Left(NotFound("reference")))
-      case Some(reference) if reference.recipeId != recipeId =>
-        IO.pure(Left(InvalidRelationship("reference does not belong to recipe")))
-      case Some(_) =>
-        now
-          .flatMap(timestamp =>
-            transact(
-              references.delete(referenceId).flatMap {
-                case true =>
-                  searchDocuments
-                    .rebuildSearchDocument(recipeId, timestamp)
-                    .as(true)
-                case false => false.pure[ConnectionIO]
-              }
-            )
-          )
-          .map(deleted => Either.cond(deleted, (), NotFound("reference")))
+    now.flatMap { timestamp =>
+      val program = references.find(referenceId).flatMap {
+        case None => NotFound("reference").asLeft[Unit].pure[ConnectionIO]
+        case Some(reference) if reference.recipeId != recipeId =>
+          InvalidRelationship("reference does not belong to recipe")
+            .asLeft[Unit]
+            .pure[ConnectionIO]
+        case Some(_) =>
+          references.delete(referenceId).flatMap {
+            case false => NotFound("reference").asLeft[Unit].pure[ConnectionIO]
+            case true  =>
+              searchDocuments.rebuildSearchDocument(recipeId, timestamp).as(().asRight[ApiError])
+          }
+      }
+      transactWrite(recipeId)(program)
     }
 
   def retryReference(
@@ -466,7 +467,7 @@ final class RecipeApiService(
             val job = pendingJob(reference.id, timestamp)
             scrapeJobs.create(job).as(job.asRight[ApiError])
         }
-      transact(program)
+      transactWrite(recipeId)(program)
     }
 
   def getReferenceScrapeStatus(
@@ -520,13 +521,14 @@ final class RecipeApiService(
   private def parseCreateRecipe(
       input: CreateRecipeInput
   ): IO[Either[ApiError, CreateRecipeCommand]] =
-    validateRecipe(input.title, input.description.getOrElse("")).flatMap { recipe =>
-      validateKeywords(input.keywords.getOrElse("")).map { recipeKeywords =>
-        (recipe, recipeKeywords).mapN { case ((title, description), keywords) =>
-          CreateRecipeCommand(title, description, keywords)
-        }
+    IO.pure(
+      (
+        validateRecipe(input.title, input.description.getOrElse("")),
+        validateKeywords(input.keywords.getOrElse(""))
+      ).mapN { case ((title, description), keywords) =>
+        CreateRecipeCommand(title, description, keywords)
       }
-    }
+    )
 
   private def parseCreateMeal(
       input: CreateMealInput
@@ -537,7 +539,7 @@ final class RecipeApiService(
   private def validateRecipe(
       rawTitle: String,
       rawDescription: String
-  ): IO[Either[ApiError, (String, String)]] = {
+  ): Either[ApiError, (String, String)] = {
     val title = rawTitle.trim
     val description = rawDescription.trim
     val errors =
@@ -550,12 +552,12 @@ final class RecipeApiService(
           "description" -> s"must be at most $MaxDescriptionLength characters"
         )
       ).flatten
-    IO.pure(validationResult(errors, (title, description)))
+    validationResult(errors, (title, description))
   }
 
   private def validateReference(
       input: CreateReferenceInput
-  ): IO[Either[ApiError, ValidatedReference]] = {
+  ): Either[ApiError, ValidatedReference] = {
     val kind = input.kind.trim.toLowerCase(Locale.ROOT) match {
       case "url"  => Some(ReferenceKind.Url)
       case "book" => Some(ReferenceKind.Book)
@@ -589,16 +591,14 @@ final class RecipeApiService(
           "displayName" -> s"must be at most $MaxDisplayNameLength characters"
         )
       ).flatten
-    IO.pure(
-      kind match {
-        case Some(value) =>
-          validationResult(
-            errors,
-            ValidatedReference(value, url, citation, displayName)
-          )
-        case None => Left(Validation(groupErrors(errors)))
-      }
-    )
+    kind match {
+      case Some(value) =>
+        validationResult(
+          errors,
+          ValidatedReference(value, url, citation, displayName)
+        )
+      case None => Left(Validation(groupErrors(errors)))
+    }
   }
 
   private def validateText(
@@ -650,7 +650,7 @@ final class RecipeApiService(
 
   /** Normalizes comma-separated tags while preserving first spelling and rejecting unsafe volume.
     */
-  private def validateKeywords(raw: String): IO[Either[ApiError, List[String]]] = {
+  private def validateKeywords(raw: String): Either[ApiError, List[String]] = {
     val normalized =
       raw
         .split(",", -1)
@@ -669,9 +669,7 @@ final class RecipeApiService(
           "each keyword must be at most 100 characters"
         )
       ).flatten
-    IO.pure(
-      Either.cond(errors.isEmpty, normalized, Validation(Map("keywords" -> errors)))
-    )
+    Either.cond(errors.isEmpty, normalized, Validation(Map("keywords" -> errors)))
   }
 
   private def sortRecipes(
@@ -766,6 +764,18 @@ final class RecipeApiService(
       case Right(storageKeys) =>
         photoCleanup.deleteBestEffort(storageKeys).as(Right(()))
     }
+
+  /** Parent-first locking serializes source writes and projection rebuilds under READ COMMITTED.
+    * Never run network or photo-store I/O while holding this lock.
+    */
+  private def transactWrite[A](recipeId: RecipeId)(program: ConnectionIO[A]): IO[A] =
+    transact(recipes.findForUpdate(recipeId) *> program)
+
+  private def requireRecipe(updated: Boolean): ConnectionIO[Unit] =
+    if (updated) ().pure[ConnectionIO]
+    else
+      IllegalStateException("Locked recipe disappeared during a write")
+        .raiseError[ConnectionIO, Unit]
 
   private def transact[A](program: ConnectionIO[A]): IO[A] =
     program.transact(transactor)

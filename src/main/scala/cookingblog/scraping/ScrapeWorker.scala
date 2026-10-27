@@ -23,6 +23,7 @@ final class ScrapeWorker(
     config: ScrapeConfig,
     scraper: PageScraper,
     random: Random[IO],
+    recipes: RecipeRepository[ConnectionIO],
     references: RecipeReferenceRepository[ConnectionIO],
     scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
     jobs: ScrapeJobRepository[ConnectionIO],
@@ -156,7 +157,12 @@ final class ScrapeWorker(
         scrapedDocuments.findByReference(reference.id).flatMap {
           case None           => scrapedDocuments.create(document)
           case Some(existing) =>
-            scrapedDocuments.update(document.copy(id = existing.id)).void
+            scrapedDocuments.update(document.copy(id = existing.id)).flatMap {
+              case true  => ().pure[ConnectionIO]
+              case false =>
+                IllegalStateException("Scraped document disappeared during completion")
+                  .raiseError[ConnectionIO, Unit]
+            }
         } *>
           searchDocuments.rebuildSearchDocument(reference.recipeId, timestamp) *>
           jobs.update(succeeded).flatMap {
@@ -166,10 +172,16 @@ final class ScrapeWorker(
                 "Claimed scrape job disappeared before completion"
               ).raiseError[ConnectionIO, Unit]
           }
-      program.transact(transactor) *>
-        logger.info(
+      // Match the API's parent-first lock order; do not lock across the network fetch.
+      (recipes.findForUpdate(reference.recipeId) *>
+        references.find(reference.id).flatMap {
+          case None    => false.pure[ConnectionIO]
+          case Some(_) => program.as(true)
+        }).transact(transactor).flatMap { completed =>
+        (logger.info(
           s"Scrape worker $workerNumber completed job ${ScrapeJobId.value(job.id)}"
-        ) *> recordScrape("succeeded", startedAt)
+        ) *> recordScrape("succeeded", startedAt)).whenA(completed)
+      }
     }
 
   /** Records a bounded error, choosing terminal failure or jittered retry from the failure policy.
@@ -269,6 +281,7 @@ object ScrapeWorker {
       config,
       scraper,
       random,
+      DoobieRepositories.recipes,
       DoobieRepositories.references,
       DoobieRepositories.scrapedDocuments,
       DoobieRepositories.scrapeJobs,
@@ -288,6 +301,7 @@ object ScrapeWorker {
       config,
       scraper,
       random,
+      DoobieRepositories.recipes,
       DoobieRepositories.references,
       DoobieRepositories.scrapedDocuments,
       DoobieRepositories.scrapeJobs,

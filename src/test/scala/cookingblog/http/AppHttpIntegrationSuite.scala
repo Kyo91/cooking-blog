@@ -3,13 +3,12 @@ package cookingblog.http
 import cats.effect.*
 import ciris.Secret
 import cookingblog.auth.*
-import cookingblog.config.{AuthConfig, DatabaseConfig}
-import cookingblog.database.Database
+import cookingblog.config.AuthConfig
 import cookingblog.observability.OperationalMetrics
 import cookingblog.storage.LocalPhotoStore
 import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
 import doobie.implicits.*
-import munit.CatsEffectSuite
+import cookingblog.testing.PostgresIntegrationSuite
 import org.http4s.*
 import org.http4s.Method.*
 import org.http4s.implicits.*
@@ -22,19 +21,8 @@ import java.nio.file.Files
 import scala.jdk.CollectionConverters.*
 import scala.concurrent.duration.*
 
-final class AppHttpIntegrationSuite extends CatsEffectSuite {
+final class AppHttpIntegrationSuite extends PostgresIntegrationSuite {
   given Logger[IO] = NoOpLogger[IO]
-
-  private val databaseConfig =
-    DatabaseConfig(
-      sys.env.getOrElse(
-        "DATABASE_URL",
-        "jdbc:postgresql://localhost:5432/cooking_blog"
-      ),
-      sys.env.getOrElse("DATABASE_USER", "cooking_blog"),
-      Secret(sys.env.getOrElse("DATABASE_PASSWORD", "cooking_blog_dev")),
-      poolSize = 2
-    )
 
   private val authConfig =
     AuthConfig("admin", Secret("test"), 24.hours, cookieSecure = false)
@@ -294,8 +282,7 @@ final class AppHttpIntegrationSuite extends CatsEffectSuite {
       scrapingEnabled: Boolean = true
   ): Resource[IO, HttpApp[IO]] =
     for {
-      _ <- Resource.eval(Database.migrate(databaseConfig))
-      transactor <- Database.transactor(databaseConfig)
+      transactor <- database
       store = DoobieSessionStore(transactor)
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)

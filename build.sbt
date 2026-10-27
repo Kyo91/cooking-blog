@@ -56,6 +56,7 @@ lazy val root = project
       metadataExtractor,
       scalaTags,
       webpImageIo,
-      munitCatsEffect % Test
+      munitCatsEffect % Test,
+      testcontainersPostgres % Test
     )
   )

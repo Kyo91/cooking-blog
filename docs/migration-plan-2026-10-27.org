@@ -1,0 +1,289 @@
+#+title: Idiomatic Scala and Correctness Refactoring Plan
+#+date: 2026-10-27
+#+startup: overview
+
+* Purpose and Review Scope
+
+Improve correctness, type safety, and separation of responsibilities without
+replacing the existing technology stack or rewriting the application.
+
+This plan records a static review of implementation and tests. The review did
+not execute tests or reproduce concurrency/network failures. Findings below
+identify concrete implementation risks; regression tests should establish the
+behavior before fixes are implemented.
+
+This is a proposed refactoring sequence, not a record of completed work. Keep
+=PLAN.org= as the source of truth for overall delivery sequencing and reconcile
+these changes with its active phases before implementation.
+
+* Retain the Existing Foundations
+
+Keep Cats Effect, http4s, doobie/PostgreSQL, Circe, Ciris, ScalaTags, and MUnit.
+The opaque IDs, parameterized SQL, database constraints, default-deny
+authentication, and resource-managed image processing are good foundations.
+
+Do not introduce:
+
+- A switch to ZIO, another ORM, or a new frontend framework.
+- Multiple sbt modules without a real compilation or deployment boundary.
+- A blanket conversion of all concrete =IO= services to =F[_]=.
+- A generic repository framework in place of explicit SQL.
+- A refinement library where opaque types and Cats already suffice.
+
+Preserve existing authentication, CSRF, shared-collection, upload-validation,
+and durable-scraping requirements throughout the refactor.
+
+* Phase 1: Concurrency-Safe Application Writes
+
+** Evidence and risks
+
+=src/main/scala/cookingblog/service/RecipeApiService.scala= reads a recipe in
+one transaction, merges changes, then writes it in another. The recipe update
+in =src/main/scala/cookingblog/repository/Repositories.scala= writes every
+mutable column, including =last_made_at= and =primary_photo_id=.
+
+Editing a description can therefore overwrite a concurrently selected primary
+photo or a timestamp refreshed by meal creation. Several callers also discard
+the Boolean update result and can report success after concurrent deletion.
+
+Related writes and projection rebuilds need a concurrency protocol: putting
+statements in one transaction does not by itself eliminate races under the
+default isolation level.
+
+** Proposed changes
+
+- [ ] Replace broad whole-record updates with intent-specific operations such
+  as =updateDetails= and =setPrimaryPhoto=.
+- [ ] Choose optimistic version checks or appropriate row locking for
+  read-modify-write operations.
+- [ ] Establish a consistent recipe-level locking protocol for writes that
+  rebuild search documents or cached last-made timestamps.
+- [ ] Handle missing rows and unsuccessful conditional updates explicitly.
+- [ ] Keep related writes and projection changes within the service-level
+  transaction boundary.
+
+** Acceptance criteria
+
+- Concurrent edits to unrelated fields cannot silently overwrite one another.
+- Recipe edits cannot revert a concurrently selected photo or last-made value.
+- Concurrent meal/reference changes leave derived projections consistent.
+- Concurrent deletion cannot produce a false successful update response.
+- Deterministic concurrent-write integration tests cover these scenarios.
+
+* Phase 2: Scrape Claims as Leases
+
+** Evidence and risks
+
+=claimNext= in =src/main/scala/cookingblog/repository/Repositories.scala= locks
+individual job rows. Its =NOT EXISTS= check for running jobs does not prevent
+two transactions from claiming different pending jobs for the same reference.
+
+Completion in =src/main/scala/cookingblog/scraping/ScrapeWorker.scala= does not
+verify that the worker still owns the claim, that recovery has not reclaimed
+it, or that the reference URL has not changed during fetching.
+
+The concurrent-claim test in
+=src/test/scala/cookingblog/scraping/ScrapeWorkerIntegrationSuite.scala= uses
+different references and does not establish same-reference exclusion.
+
+** Proposed changes
+
+- [ ] Return a typed =ClaimedJob= carrying a claim token/generation and source
+  revision.
+- [ ] Replace generic job updates with conditional =complete=, =retry=, and
+  =fail= transitions.
+- [ ] Serialize claiming per reference, backed by an appropriate database
+  invariant.
+- [ ] Verify claim ownership and source revision before committing document,
+  search, and job-state changes.
+- [ ] Make recovery invalidate old claim ownership.
+
+** Acceptance criteria
+
+- Two workers cannot concurrently own active claims for one reference.
+- A stale worker cannot overwrite a recovered or newly claimed job.
+- A result fetched for an old URL cannot replace the current reference's
+  imported content.
+- Document/search updates and successful completion remain atomic.
+- Tests cover same-reference claims, recovery followed by stale completion,
+  URL changes during fetch, and retry transitions.
+
+* Phase 3: Scraper Network and Resource Boundaries
+
+** Evidence and risks
+
+=src/main/scala/cookingblog/scraping/NetworkSafety.scala= validates DNS answers
+but returns =Unit=. The HTTP client subsequently resolves/connects
+independently, so the validated address is not bound to the actual connection.
+This leaves a DNS-rebinding/time-of-check-to-time-of-use gap.
+
+=src/main/scala/cookingblog/scraping/SecurePageFetcher.scala= follows redirects
+inside the previous response's resource scope. With a per-host connection
+limit of one, a same-host redirect risks waiting for a connection retained by
+the outer request.
+
+** Proposed changes
+
+- [ ] Bind destination validation to connection establishment while preserving
+  hostname verification, TLS SNI, and the HTTP host identity.
+- [ ] Apply the same destination policy to every redirect.
+- [ ] Return a redirect decision from =client.run(...).use=, release the
+  response, and only then fetch the next destination.
+- [ ] Preserve redirect, response-size, request-time, and total-job limits.
+
+** Acceptance criteria
+
+- Connection establishment cannot use an unvalidated destination address.
+- Redirects to non-public destinations remain rejected.
+- Same-host redirects complete with a real bounded client pool configured for
+  one connection per host.
+- Redirect responses release resources on success, failure, and cancellation.
+- Tests cover resolver changes and real client-pool behavior, not only stub
+  HTTP clients.
+
+* Phase 4: Correct S3 Adapter Semantics
+
+** Evidence and risks
+
+=src/main/scala/cookingblog/storage/S3PhotoStore.scala=:
+
+- Uses =AsyncResponseTransformer.toBytes=, buffering the complete object even
+  though the public read interface returns an FS2 stream.
+- Discards bulk-delete responses, including possible per-object failures.
+- Implements =checkWritable= using =HeadBucket=, which does not establish write
+  permission.
+
+The direct AWS SDK v2 choice remains reasonable. These are adapter issues,
+not a reason to replace the library.
+
+** Proposed changes
+
+- [ ] Bridge SDK response publishing to FS2 with backpressure and cancellation.
+- [ ] Inspect per-object bulk-delete errors and propagate/retry failures.
+- [ ] Implement a write/delete readiness probe or rename the check and its
+  callers to accurately describe bucket accessibility rather than writability.
+- [ ] Extend the storage contract tests to cover these semantics.
+
+** Acceptance criteria
+
+- Media reads do not buffer the entire object before emitting bytes.
+- Cancellation releases the SDK response and concurrency permit.
+- Partial bulk-delete failures are observable and cannot be mistaken for
+  successful removal.
+- Readiness accurately communicates the permission capability it verifies.
+
+* Phase 5: Stronger Domain Values and Pure Validation
+
+** Evidence and risks
+
+=RecipeReference= in =src/main/scala/cookingblog/domain/Domain.scala= permits
+contradictory combinations of =kind=, =url=, and =citation=. The private
+=ValidatedReference= representation repeats those possibilities.
+
+Validation functions in
+=src/main/scala/cookingblog/service/RecipeApiService.scala= wrap pure
+validation in =IO= and use a custom =continue= helper for effectful sequencing.
+
+** Proposed changes
+
+- [ ] Represent URL and book references with a sum type, for example:
+
+#+begin_src scala
+enum ReferenceSource {
+  case Url(value: HttpUrl)
+  case Book(citation: BookCitation)
+}
+#+end_src
+
+- [ ] Add validated values selectively for important invariants: titles,
+  keywords, photo formats, and pagination inputs.
+- [ ] Make pure validation return =Either= or =ValidatedNec= directly.
+- [ ] Use =EitherT= locally where it simplifies effectful workflows rather
+  than maintaining custom sequencing helpers.
+- [ ] Keep database and HTTP encoding/decoding at their respective boundaries.
+
+** Acceptance criteria
+
+- Validated domain references cannot represent missing or contradictory source
+  values.
+- Validation can be tested without running effects.
+- Database constraints continue to enforce invariants independently.
+- Existing API behavior remains compatible unless an explicit contract change
+  is documented and tested.
+
+* Phase 6: Application Queries, Pure Templates, and Transport Models
+
+** Evidence and risks
+
+=src/main/scala/cookingblog/http/templates/BrowserRecipeDetailTemplates.scala=
+performs database queries and transaction management inside the template layer.
+
+=RecipeApiService= handles several resources, validation, pagination, and
+projections. The test-oriented =PersistenceService= provides another set of
+transactional operations, risking divergence from production use cases.
+
+=src/main/scala/cookingblog/http/api/ApiJson.scala= derives responses directly
+from domain entities. Its URL-reference encoder always adds a =pending=
+import status rather than deriving the actual state.
+
+** Proposed changes
+
+- [ ] Extract focused recipe, meal, reference, and search services.
+- [ ] Introduce a recipe-detail query service returning a view model.
+- [ ] Make ScalaTags templates pure renderers without repository or transactor
+  dependencies.
+- [ ] Consolidate or move the test-oriented =PersistenceService= so tests
+  exercise the same invariant-preserving operations as production.
+- [ ] Introduce explicit response DTOs where transport shape differs from the
+  domain, including accurate reference import status.
+
+** Acceptance criteria
+
+- Templates render supplied view models without database effects.
+- HTTP adapters own transport concerns; services own use cases and transactions.
+- Production invariant tests exercise production application operations.
+- API responses reflect actual import state rather than encoder defaults.
+- Refactoring does not require a new module or unnecessary effect polymorphism.
+
+* Phase 7: Database-Level Pagination
+
+** Evidence and risks
+
+=listRecipes= in =src/main/scala/cookingblog/service/RecipeApiService.scala=
+loads all matching recipes, sorts them in memory, locates the cursor row, and
+then takes a page. Deleting or changing the cursor row can invalidate
+continuation, and the workload grows with the complete result set.
+
+** Proposed changes
+
+- [ ] Move ordering, cursor predicates, and =LIMIT limit + 1= into repository
+  queries.
+- [ ] Introduce typed keyset cursors containing actual ordering keys, including
+  relevance for ranked search and a deterministic ID tie-breaker.
+- [ ] Preserve query/sort binding and validate malformed cursors.
+- [ ] Document pagination behavior when the underlying collection changes.
+
+** Acceptance criteria
+
+- Page queries do not materialize the complete matching collection.
+- Continuation does not require the original cursor row to still exist.
+- Ordering is deterministic for browse and ranked-search modes.
+- Tests cover ties, cursor deletion, malformed cursors, query/sort mismatch,
+  and collection changes between requests.
+
+* Implementation and Verification Rules
+
+- Implement incrementally in the order above; address correctness before
+  cosmetic restructuring.
+- Add regression tests before or alongside each behavior change.
+- Preserve unrelated working-tree changes.
+- Use new incrementally numbered Flyway migrations; never rewrite applied
+  migrations.
+- Preserve classical Scala braces and strict compiler warnings.
+- Follow project instructions for Metals-first compilation/testing and any
+  required build import after dependency changes.
+- Ensure PostgreSQL is healthy; format Scala, perform a clean compile, run unit
+  and PostgreSQL integration tests, and run =git diff --check= before handoff.
+- Update setup/configuration documentation when behavior changes.
+- Mark phases complete only after their acceptance criteria are implemented
+  and verified.

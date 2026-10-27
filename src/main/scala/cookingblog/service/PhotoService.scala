@@ -30,6 +30,7 @@ final class PhotoService(
     transactor: Transactor[IO],
     photoStore: PhotoStore,
     imageProcessor: ImageProcessor,
+    recipes: RecipeRepository[ConnectionIO],
     meals: MealRepository[ConnectionIO],
     photos: PhotoRepository[ConnectionIO],
     photoCleanup: PhotoCleanup[IO],
@@ -111,9 +112,9 @@ final class PhotoService(
               case Right(existing) =>
                 val updated =
                   existing.copy(comment = comment, updatedAt = timestamp)
-                photos.update(updated).as(updated.asRight[ApiError])
+                photos.update(updated).map(Either.cond(_, updated, NotFound("photo")))
             }
-          program.transact(transactor)
+          transactWrite(recipeId)(program)
         }
     }
 
@@ -131,9 +132,9 @@ final class PhotoService(
         case Right(photo) =>
           photos
             .delete(photo.id)
-            .as((photo.storageKey, ()).asRight[ApiError])
+            .map(Either.cond(_, (photo.storageKey, ()), NotFound("photo")))
       }
-    program.transact(transactor).flatMap {
+    transactWrite(recipeId)(program).flatMap {
       case Left(error)            => IO.pure(Left(error))
       case Right((storageKey, _)) =>
         photoCleanup.deleteBestEffort(List(storageKey)).as(Right(()))
@@ -232,7 +233,7 @@ final class PhotoService(
               case Some(_) =>
                 photos.create(photo).as(photo.asRight[ApiError])
             }
-          program.transact(transactor).attempt.flatMap {
+          transactWrite(recipeId)(program).attempt.flatMap {
             case Right(Right(saved)) => IO.pure(Right(saved))
             case Right(Left(error))  =>
               photoCleanup.deleteBestEffort(List(storageKey)).as(Left(error))
@@ -301,6 +302,9 @@ final class PhotoService(
     if (sanitized.isEmpty) "photo" else sanitized
   }
 
+  private def transactWrite[A](recipeId: RecipeId)(program: ConnectionIO[A]): IO[A] =
+    (recipes.findForUpdate(recipeId) *> program).transact(transactor)
+
   private def now: IO[Instant] = Clock[IO].realTimeInstant
 
   private def photoFailure(
@@ -320,6 +324,7 @@ object PhotoService {
       transactor,
       photoStore,
       ImageProcessor(),
+      DoobieRepositories.recipes,
       DoobieRepositories.meals,
       DoobieRepositories.photos,
       photoCleanup,
@@ -336,6 +341,7 @@ object PhotoService {
       transactor,
       photoStore,
       ImageProcessor(),
+      DoobieRepositories.recipes,
       DoobieRepositories.meals,
       DoobieRepositories.photos,
       photoCleanup,

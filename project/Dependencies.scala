@@ -14,6 +14,7 @@ object Dependencies {
   private val metadataExtractorVersion = "2.21.0"
   private val munitCatsEffectVersion = "2.2.0"
   private val scalaTagsVersion = "0.13.1"
+  private val testcontainersVersion = "2.0.5"
   private val webpImageIoVersion = "3.12.0"
 
   val catsEffect = "org.typelevel" %% "cats-effect" % catsEffectVersion
@@ -46,4 +47,6 @@ object Dependencies {
     "software.amazon.awssdk" % "netty-nio-client" % awsSdkVersion
   val munitCatsEffect =
     "org.typelevel" %% "munit-cats-effect" % munitCatsEffectVersion
+  val testcontainersPostgres =
+    "org.testcontainers" % "testcontainers-postgresql" % testcontainersVersion
 }
