@@ -12,9 +12,18 @@ not execute tests or reproduce concurrency/network failures. Findings below
 identify concrete implementation risks; regression tests should establish the
 behavior before fixes are implemented.
 
-This is a proposed refactoring sequence, not a record of completed work. Keep
-=PLAN.org= as the source of truth for overall delivery sequencing and reconcile
-these changes with its active phases before implementation.
+Keep =PLAN.org= as the source of truth for overall delivery sequencing and
+reconcile these changes with its active phases before implementation.
+
+Implementation queue (updated 2026-10-28):
+
+- Phase 1 is implemented in PR #17, including deterministic concurrency tests;
+  its original checklist below has not been retroactively checked off.
+- Phase 4 (S3 adapter semantics) was advanced to immediately follow Phase 1,
+  ahead of scrape leases and network hardening, at the user's request. It is
+  implemented and verified as recorded below.
+- Next: Phase 2, followed by Phases 3, 5, 6, and 7. Original phase numbers are
+  retained so existing references remain stable.
 
 * Retain the Existing Foundations
 
@@ -141,7 +150,7 @@ the outer request.
 - Tests cover resolver changes and real client-pool behavior, not only stub
   HTTP clients.
 
-* Phase 4: Correct S3 Adapter Semantics
+* DONE Phase 4: Correct S3 Adapter Semantics
 
 ** Evidence and risks
 
@@ -158,11 +167,11 @@ not a reason to replace the library.
 
 ** Proposed changes
 
-- [ ] Bridge SDK response publishing to FS2 with backpressure and cancellation.
-- [ ] Inspect per-object bulk-delete errors and propagate/retry failures.
-- [ ] Implement a write/delete readiness probe or rename the check and its
+- [X] Bridge SDK response publishing to FS2 with backpressure and cancellation.
+- [X] Inspect per-object bulk-delete errors and propagate/retry failures.
+- [X] Implement a write/delete readiness probe or rename the check and its
   callers to accurately describe bucket accessibility rather than writability.
-- [ ] Extend the storage contract tests to cover these semantics.
+- [X] Extend storage test coverage for these semantics.
 
 ** Acceptance criteria
 
@@ -171,6 +180,30 @@ not a reason to replace the library.
 - Partial bulk-delete failures are observable and cannot be mistaken for
   successful removal.
 - Readiness accurately communicates the permission capability it verifies.
+
+** Implementation and verification (2026-10-28)
+
+- Reads use the SDK response publisher and FS2's Flow bridge with one-buffer
+  demand, preserving cancellation and the configured overall request timeout.
+  The SDK future and unconsumed response are resource-managed; termination
+  releases the operation permit.
+- Bulk deletion inspects per-object errors and fails with a sanitized error
+  count. Callers can retry the idempotent deletion; partial success is no
+  longer reported as complete success.
+- Readiness writes and deletes a unique zero-byte photo-variant object under
+  the configured prefix. Cleanup is attempted even after a failed/cancelled
+  write. Denied write or delete permission reports unhealthy. Failed cleanup
+  may leave an orphan for later reconciliation; this is documented in README.
+- Added =S3PhotoStoreSuite= with 11 regressions covering bounded demand, early
+  termination, cancellation before headers and during the body, body errors,
+  request timeout, complete reads, partial-delete retry, and readiness failures.
+  A real SDK/HTTP test serves a deliberately unfinished response to verify
+  streaming and subsequent operations; no new dependency was required.
+- Verification: =./bin/scalafmt=, then =sbt --client= with
+  =clean; scalafmtCheckAll; test= passed all 84 tests, including disposable
+  PostgreSQL integration suites and the opt-in MinIO storage contract with
+  =S3_TEST_ENDPOINT= configured. Strict production and test compilation passed.
+  Metals tools were unavailable. =git diff --check= passed.
 
 * Phase 5: Stronger Domain Values and Pure Validation
 
@@ -273,8 +306,8 @@ continuation, and the workload grows with the complete result set.
 
 * Implementation and Verification Rules
 
-- Implement incrementally in the order above; address correctness before
-  cosmetic restructuring.
+- Implement incrementally in the implementation queue recorded above; address
+  correctness before cosmetic restructuring.
 - Add regression tests before or alongside each behavior change.
 - Preserve unrelated working-tree changes.
 - Use new incrementally numbered Flyway migrations; never rewrite applied

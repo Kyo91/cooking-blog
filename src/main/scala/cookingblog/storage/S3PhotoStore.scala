@@ -4,7 +4,9 @@ import cats.effect.{IO, Resource}
 import cats.effect.std.Semaphore
 import cats.syntax.all.*
 import cookingblog.config.{S3CredentialsMode, S3PhotoConfig}
-import fs2.Stream
+import fs2.{Chunk, Stream}
+import fs2.interop.flow.fromPublisher
+import org.reactivestreams.{Subscriber, Subscription}
 import software.amazon.awssdk.auth.credentials.{
   AwsBasicCredentials,
   DefaultCredentialsProvider,
@@ -16,7 +18,10 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3AsyncClient
 import software.amazon.awssdk.services.s3.model.*
 
+import java.nio.ByteBuffer
 import java.nio.file.Path
+import java.util.concurrent.Flow
+import java.util.concurrent.atomic.AtomicBoolean
 import java.time.Instant
 import scala.jdk.CollectionConverters.*
 
@@ -51,22 +56,39 @@ final class S3PhotoStore private (
       variant: PhotoVariant,
       extension: PhotoExtension
   ): Stream[IO, Byte] =
-    Stream.resource(Resource.make(operations.acquire)(_ => operations.release)).flatMap { _ =>
+    Stream.resource(operations.permit).flatMap { _ =>
       val request =
         GetObjectRequest
           .builder()
           .bucket(config.bucket)
           .key(objectKey(storageKey, variant, extension))
           .build()
+      // Own the future before waiting for headers, including cancellation before subscription.
       Stream
-        .eval(
-          IO.fromCompletableFuture(
-            IO(
-              client.getObject(request, AsyncResponseTransformer.toBytes[GetObjectResponse]())
-            )
-          )
-        )
-        .flatMap(bytes => Stream.emits(bytes.asByteArray()).covary[IO])
+        .eval(IO(new AtomicBoolean(false)))
+        .flatMap { subscribed =>
+          val response = Resource.make(
+            IO(client.getObject(request, AsyncResponseTransformer.toPublisher[GetObjectResponse]()))
+          ) { future =>
+            IO {
+              val cancelled = future.cancel(true)
+              if (!cancelled && !future.isCompletedExceptionally && !subscribed.get()) {
+                future.join().subscribe(S3PhotoStore.cancellingSubscriber)
+              }
+            }
+          }
+          Stream.resource(response).flatMap { future =>
+            Stream.eval(IO.fromCompletableFuture(IO.pure(future))).flatMap { publisher =>
+              fromPublisher[IO, ByteBuffer](chunkSize = 1) { subscriber =>
+                IO {
+                  subscribed.set(true)
+                  publisher.subscribe(S3PhotoStore.adaptSubscriber(subscriber))
+                }
+              }.flatMap(buffer => Stream.chunk(Chunk.byteBuffer(buffer)))
+            }
+          }
+        }
+        .timeout(config.requestTimeout)
     }
 
   override def delete(storageKey: StorageKey): IO[Unit] =
@@ -89,7 +111,13 @@ final class S3PhotoStore private (
                     .build()
                 )
                 .build()
-            IO.fromCompletableFuture(IO(client.deleteObjects(request))).void
+            IO.fromCompletableFuture(IO(client.deleteObjects(request))).flatMap { response =>
+              IO.raiseWhen(!response.errors().isEmpty)(
+                new IllegalStateException(
+                  s"S3 bulk deletion failed for ${response.errors().size()} object(s)"
+                )
+              )
+            }
           }
         )
     }
@@ -105,11 +133,33 @@ final class S3PhotoStore private (
     }
 
   override def checkWritable: IO[Boolean] =
-    withOperation(
-      IO.fromCompletableFuture(
-        IO(client.headBucket(HeadBucketRequest.builder().bucket(config.bucket).build()))
-      ).void
-    ).attempt.map(_.isRight)
+    withOperation {
+      // A unique key under the configured photo prefix verifies the same IAM scope as uploads.
+      // Always attempt cleanup, including when a failed/cancelled PUT may have reached S3.
+      IO(StorageKey.random).flatMap { storageKey =>
+        val key = objectKey(storageKey, PhotoVariant.Original, PhotoExtension.Png)
+        val remove = IO
+          .fromCompletableFuture(
+            IO(
+              client.deleteObject(
+                DeleteObjectRequest.builder().bucket(config.bucket).key(key).build()
+              )
+            )
+          )
+          .void
+        val write = IO
+          .fromCompletableFuture(
+            IO(
+              client.putObject(
+                PutObjectRequest.builder().bucket(config.bucket).key(key).build(),
+                AsyncRequestBody.fromBytes(Array.emptyByteArray)
+              )
+            )
+          )
+          .void
+        write.guarantee(remove)
+      }
+    }.attempt.map(_.isRight)
 
   private def listObjects(prefix: String): IO[List[S3Object]] = {
     def next(continuationToken: Option[String], collected: List[S3Object]): IO[List[S3Object]] =
@@ -161,6 +211,32 @@ final class S3PhotoStore private (
 }
 
 object S3PhotoStore {
+
+  /** The caller retains ownership of the SDK client. */
+  private[storage] def fromClient(config: S3PhotoConfig, client: S3AsyncClient): IO[S3PhotoStore] =
+    Semaphore[IO](config.maximumConcurrency.toLong).map(new S3PhotoStore(client, config, _))
+
+  // FS2's Flow bridge owns demand and subscription cancellation; only adapt the protocol types.
+  private def adaptSubscriber(subscriber: Flow.Subscriber[ByteBuffer]): Subscriber[ByteBuffer] =
+    new Subscriber[ByteBuffer] {
+      override def onSubscribe(subscription: Subscription): Unit =
+        subscriber.onSubscribe(new Flow.Subscription {
+          override def request(elements: Long): Unit = subscription.request(elements)
+          override def cancel(): Unit = subscription.cancel()
+        })
+      override def onNext(buffer: ByteBuffer): Unit = subscriber.onNext(buffer)
+      override def onError(error: Throwable): Unit = subscriber.onError(error)
+      override def onComplete(): Unit = subscriber.onComplete()
+    }
+
+  private def cancellingSubscriber: Subscriber[ByteBuffer] =
+    new Subscriber[ByteBuffer] {
+      override def onSubscribe(subscription: Subscription): Unit = subscription.cancel()
+      override def onNext(buffer: ByteBuffer): Unit = ()
+      override def onError(error: Throwable): Unit = ()
+      override def onComplete(): Unit = ()
+    }
+
   def create(config: S3PhotoConfig): Resource[IO, S3PhotoStore] =
     for {
       operations <- Resource.eval(Semaphore[IO](config.maximumConcurrency.toLong))
