@@ -114,7 +114,17 @@ endpoints. It retains the opaque layout
 disk during upload, serves authenticated media through the application, and
 uses paginated listings for orphan reconciliation. Configuration includes
 the bucket, prefix, region, endpoint override, addressing style, credential
-mode, timeouts, and concurrency. See
+mode, timeouts, and concurrency. Media reads stream the SDK response with bounded
+demand; cancelling a read cancels its subscription and releases its concurrency
+permit. Bulk-delete responses with per-object errors fail the operation so cleanup
+can be retried rather than reporting success.
+
+The authenticated readiness check verifies S3 write/delete permission by creating
+and deleting a unique zero-byte photo-variant key under the configured prefix.
+It returns unhealthy if either operation fails; bucket-list or read access alone
+is not sufficient. If deletion is denied, the probe object may remain for orphan
+cleanup after permissions are repaired. Readiness probes do not create database
+photo records. See
 [`docs/s3-storage-spike.md`](docs/s3-storage-spike.md) for the client decision.
 
 Start the opt-in local S3-compatible profile with:
