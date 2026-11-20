@@ -1,14 +1,12 @@
 package cookingblog.scraping
 
+import cookingblog.database.Database
 import cats.effect.std.Random
 import cats.effect.{Clock, IO, Resource}
 import cats.syntax.all.*
 import cookingblog.config.ScrapeConfig
 import cookingblog.domain.*
 import cookingblog.observability.OperationalMetrics
-import cookingblog.repository.*
-import doobie.*
-import doobie.implicits.*
 import org.typelevel.log4cats.Logger
 
 import scala.concurrent.duration.*
@@ -19,15 +17,10 @@ import scala.concurrent.duration.*
   * recovery, and the atomic document/search/job completion transition.
   */
 final class ScrapeWorker(
-    transactor: Transactor[IO],
+    pool: Database,
     config: ScrapeConfig,
     scraper: PageScraper,
     random: Random[IO],
-    recipes: RecipeRepository[ConnectionIO],
-    references: RecipeReferenceRepository[ConnectionIO],
-    scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
-    jobs: ScrapeJobRepository[ConnectionIO],
-    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO],
     metrics: OperationalMetrics
 )(using logger: Logger[IO]) {
 
@@ -56,13 +49,13 @@ final class ScrapeWorker(
       .foreverM
 
   private def claim: IO[Option[ScrapeJob]] =
-    Clock[IO].realTimeInstant.flatMap(timestamp => jobs.claimNext(timestamp).transact(transactor))
+    Clock[IO].realTimeInstant.flatMap(timestamp => pool.use(_.scrapeJobs.claimNext(timestamp)))
 
   /** Runs one claimed job under the total-job timeout and maps expected failures to queue state. */
   private def process(workerNumber: Int, job: ScrapeJob): IO[Unit] = {
     Clock[IO].monotonic.flatMap { startedAt =>
       val work =
-        references.find(job.referenceId).transact(transactor).flatMap {
+        pool.use(_.references.find(job.referenceId)).flatMap {
           case None =>
             handleFailure(
               workerNumber,
@@ -153,35 +146,47 @@ final class ScrapeWorker(
           lastError = None,
           updatedAt = timestamp
         )
-      val program =
-        scrapedDocuments.findByReference(reference.id).flatMap {
-          case None           => scrapedDocuments.create(document)
-          case Some(existing) =>
-            scrapedDocuments.update(document.copy(id = existing.id)).flatMap {
-              case true  => ().pure[ConnectionIO]
-              case false =>
-                IllegalStateException("Scraped document disappeared during completion")
-                  .raiseError[ConnectionIO, Unit]
+      pool
+        .transaction {
+          repos =>
+            import repos.{
+              recipes,
+              references,
+              scrapedDocuments,
+              searchDocuments,
+              scrapeJobs as jobs
             }
-        } *>
-          searchDocuments.rebuildSearchDocument(reference.recipeId, timestamp) *>
-          jobs.update(succeeded).flatMap {
-            case true  => ().pure[ConnectionIO]
-            case false =>
-              IllegalStateException(
-                "Claimed scrape job disappeared before completion"
-              ).raiseError[ConnectionIO, Unit]
-          }
-      // Match the API's parent-first lock order; do not lock across the network fetch.
-      (recipes.findForUpdate(reference.recipeId) *>
-        references.find(reference.id).flatMap {
-          case None    => false.pure[ConnectionIO]
-          case Some(_) => program.as(true)
-        }).transact(transactor).flatMap { completed =>
-        (logger.info(
-          s"Scrape worker $workerNumber completed job ${ScrapeJobId.value(job.id)}"
-        ) *> recordScrape("succeeded", startedAt)).whenA(completed)
-      }
+            val program =
+              scrapedDocuments.findByReference(reference.id).flatMap {
+                case None           => scrapedDocuments.create(document)
+                case Some(existing) =>
+                  scrapedDocuments.update(document.copy(id = existing.id)).flatMap {
+                    case true  => ().pure[IO]
+                    case false =>
+                      IllegalStateException("Scraped document disappeared during completion")
+                        .raiseError[IO, Unit]
+                  }
+              } *>
+                searchDocuments.rebuildSearchDocument(reference.recipeId, timestamp) *>
+                jobs.update(succeeded).flatMap {
+                  case true  => ().pure[IO]
+                  case false =>
+                    IllegalStateException(
+                      "Claimed scrape job disappeared before completion"
+                    ).raiseError[IO, Unit]
+                }
+          // Match the API's parent-first lock order; do not lock across the network fetch.
+          (recipes.findForUpdate(reference.recipeId) *>
+            references.find(reference.id).flatMap {
+              case None    => false.pure[IO]
+              case Some(_) => program.as(true)
+            })
+        }
+        .flatMap { completed =>
+          (logger.info(
+            s"Scrape worker $workerNumber completed job ${ScrapeJobId.value(job.id)}"
+          ) *> recordScrape("succeeded", startedAt)).whenA(completed)
+        }
     }
 
   /** Records a bounded error, choosing terminal failure or jittered retry from the failure policy.
@@ -197,8 +202,8 @@ final class ScrapeWorker(
       val terminal = !failure.retryable || job.attemptCount >= config.maximumAttempts
       val update: IO[Boolean] =
         if (terminal) {
-          jobs
-            .update(
+          pool.use(
+            _.scrapeJobs.update(
               job.copy(
                 status = ScrapeJobStatus.Failed,
                 finishedAt = Some(timestamp),
@@ -206,7 +211,7 @@ final class ScrapeWorker(
                 updatedAt = timestamp
               )
             )
-            .transact(transactor)
+          )
         } else {
           random.nextDouble.flatMap { jitter =>
             val delay =
@@ -216,8 +221,8 @@ final class ScrapeWorker(
                 config.maximumRetryDelay,
                 jitter
               )
-            jobs
-              .update(
+            pool.use(
+              _.scrapeJobs.update(
                 job.copy(
                   status = ScrapeJobStatus.Pending,
                   availableAt = timestamp.plusMillis(delay.toMillis),
@@ -227,7 +232,7 @@ final class ScrapeWorker(
                   updatedAt = timestamp
                 )
               )
-              .transact(transactor)
+            )
           }
         }
       update.void *>
@@ -247,9 +252,8 @@ final class ScrapeWorker(
   private def recoverStale: IO[Unit] =
     Clock[IO].realTimeInstant.flatMap { timestamp =>
       val claimedBefore = timestamp.minusMillis(config.staleJobTimeout.toMillis)
-      jobs
-        .recoverStale(claimedBefore, timestamp, config.maximumAttempts)
-        .transact(transactor)
+      pool
+        .use(_.scrapeJobs.recoverStale(claimedBefore, timestamp, config.maximumAttempts))
         .flatMap { count =>
           logger.info(s"Recovered $count stale scrape jobs").whenA(count > 0)
         }
@@ -271,41 +275,31 @@ final class ScrapeWorker(
 
 object ScrapeWorker {
   def apply(
-      transactor: Transactor[IO],
+      pool: Database,
       config: ScrapeConfig,
       scraper: PageScraper,
       random: Random[IO]
   )(using Logger[IO]): ScrapeWorker =
     new ScrapeWorker(
-      transactor,
+      pool,
       config,
       scraper,
       random,
-      DoobieRepositories.recipes,
-      DoobieRepositories.references,
-      DoobieRepositories.scrapedDocuments,
-      DoobieRepositories.scrapeJobs,
-      DoobieRepositories.searchDocuments,
       OperationalMetrics.noop
     )
 
   def apply(
-      transactor: Transactor[IO],
+      pool: Database,
       config: ScrapeConfig,
       scraper: PageScraper,
       random: Random[IO],
       metrics: OperationalMetrics
   )(using Logger[IO]): ScrapeWorker =
     new ScrapeWorker(
-      transactor,
+      pool,
       config,
       scraper,
       random,
-      DoobieRepositories.recipes,
-      DoobieRepositories.references,
-      DoobieRepositories.scrapedDocuments,
-      DoobieRepositories.scrapeJobs,
-      DoobieRepositories.searchDocuments,
       metrics
     )
 }

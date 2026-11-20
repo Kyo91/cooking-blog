@@ -255,8 +255,8 @@ final class PhotoApiIntegrationSuite extends PostgresIntegrationSuite {
 
   private val testApp: Resource[IO, TestContext] =
     for {
-      transactor <- database
-      sessionStore = DoobieSessionStore(transactor)
+      pool <- database
+      sessionStore = SkunkSessionStore(pool)
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager =
         SessionManager[IO](
@@ -267,15 +267,15 @@ final class PhotoApiIntegrationSuite extends PostgresIntegrationSuite {
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       directory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(directory))
-      photoService = PhotoService(transactor, photoStore, PhotoCleanup(photoStore))
+      photoService = PhotoService(pool, photoStore, PhotoCleanup(photoStore))
       http =
         AppHttp(
           credentials,
           manager,
-          transactor,
+          pool,
           authConfig,
           photoService,
-          RecipeApiService(transactor, PhotoCleanup(photoStore))
+          RecipeApiService(pool, PhotoCleanup(photoStore))
         )
     } yield TestContext(http.app, photoStore)
 

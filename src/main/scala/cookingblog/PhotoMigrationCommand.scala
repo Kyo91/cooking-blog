@@ -4,9 +4,7 @@ import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.syntax.all.*
 import cookingblog.config.{AppConfig, S3PhotoConfig}
 import cookingblog.database.Database
-import cookingblog.repository.DoobieRepositories
 import cookingblog.storage.*
-import doobie.implicits.*
 import io.circe.syntax.*
 
 import java.nio.file.Path
@@ -25,8 +23,8 @@ object PhotoMigrationCommand extends IOApp {
               validatePaths(localDirectory, manifestPath).flatMap {
                 case (normalizedDirectory, normalizedManifest) =>
                   resources(config, normalizedDirectory, s3, options.direction).use {
-                    case (transactor, source, target) =>
-                      DoobieRepositories.photos.listAll.transact(transactor).flatMap { photos =>
+                    case (pool, source, target) =>
+                      pool.use(_.photos.listAll).flatMap { photos =>
                         photos
                           .traverse { photo =>
                             IO.fromOption(PhotoExtension.fromContentType(photo.contentType))(
@@ -68,9 +66,9 @@ object PhotoMigrationCommand extends IOApp {
       localDirectory: Path,
       s3: S3PhotoConfig,
       direction: PhotoMigrationDirection
-  ): Resource[IO, (doobie.Transactor[IO], PhotoStore, PhotoStore)] =
+  ): Resource[IO, (Database, PhotoStore, PhotoStore)] =
     for {
-      transactor <- Database.transactor(config.database)
+      pool <- Database.pooled(config.database)
       local <- Resource.eval(LocalPhotoStore.create(localDirectory))
       s3Store <- S3PhotoStore.create(s3)
       (source, target) =
@@ -78,7 +76,7 @@ object PhotoMigrationCommand extends IOApp {
           case PhotoMigrationDirection.LocalToS3 => (local: PhotoStore, s3Store: PhotoStore)
           case PhotoMigrationDirection.S3ToLocal => (s3Store: PhotoStore, local: PhotoStore)
         }
-    } yield (transactor, source, target)
+    } yield (pool, source, target)
 
   private def migrationScope(
       direction: PhotoMigrationDirection,

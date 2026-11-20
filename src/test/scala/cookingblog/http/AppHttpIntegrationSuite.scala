@@ -7,7 +7,6 @@ import cookingblog.config.AuthConfig
 import cookingblog.observability.OperationalMetrics
 import cookingblog.storage.LocalPhotoStore
 import cookingblog.service.{PhotoCleanup, PhotoService, RecipeApiService}
-import doobie.implicits.*
 import cookingblog.testing.PostgresIntegrationSuite
 import org.http4s.*
 import org.http4s.Method.*
@@ -15,6 +14,9 @@ import org.http4s.implicits.*
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
 import org.typelevel.ci.CIString
+
+import skunk.codec.all.bool
+import skunk.implicits.*
 
 import java.security.SecureRandom
 import java.nio.file.Files
@@ -282,8 +284,8 @@ final class AppHttpIntegrationSuite extends PostgresIntegrationSuite {
       scrapingEnabled: Boolean = true
   ): Resource[IO, HttpApp[IO]] =
     for {
-      transactor <- database
-      store = DoobieSessionStore(transactor)
+      pool <- database
+      store = SkunkSessionStore(pool)
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
@@ -291,13 +293,13 @@ final class AppHttpIntegrationSuite extends PostgresIntegrationSuite {
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
       cleanup = PhotoCleanup(photoStore)
-      photoService = PhotoService(transactor, photoStore, cleanup, metrics)
-      recipeService = RecipeApiService(transactor, cleanup)
+      photoService = PhotoService(pool, photoStore, cleanup, metrics)
+      recipeService = RecipeApiService(pool, cleanup)
       http =
         AppHttp(
           credentials,
           manager,
-          transactor,
+          pool,
           authConfig,
           photoService,
           recipeService,
@@ -306,14 +308,14 @@ final class AppHttpIntegrationSuite extends PostgresIntegrationSuite {
           scrapingEnabled
         )
       migrationExists <- Resource.eval(
-        sql"""
+        pool.session.use(_.unique(sql"""
           select exists (
             select 1
             from information_schema.tables
             where table_schema = 'public'
               and table_name = 'auth_sessions'
           )
-        """.query[Boolean].unique.transact(transactor)
+        """.query(bool)))
       )
       _ <- Resource.eval(
         IO.raiseUnless(migrationExists)(

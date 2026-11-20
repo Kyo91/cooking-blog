@@ -1,17 +1,17 @@
 package cookingblog.scraping
 
+import cookingblog.database.Database
 import cats.effect.{IO, Resource}
 import cats.effect.std.Random
 import cookingblog.config.ScrapeConfig
 import cookingblog.observability.OperationalMetrics
-import doobie.Transactor
 import org.http4s.ember.client.EmberClientBuilder
 import org.typelevel.log4cats.Logger
 
 object Scraping {
   def resources(
       config: ScrapeConfig,
-      transactor: Transactor[IO],
+      pool: Database,
       metrics: OperationalMetrics
   )(using logger: Logger[IO]): Resource[IO, Unit] =
     if (config.enabled) {
@@ -28,7 +28,7 @@ object Scraping {
           SecurePageFetcher(client, config, NetworkSafety(SystemHostResolver))
         scrapeWorker =
           ScrapeWorker(
-            transactor,
+            pool,
             config,
             HttpPageScraper(pageFetcher),
             random,

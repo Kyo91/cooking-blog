@@ -1,13 +1,11 @@
 package cookingblog.scraping
 
+import cookingblog.database.Database
 import cats.effect.std.Random
 import cats.effect.{Clock, IO, Ref}
 import cats.syntax.all.*
 import cookingblog.config.ScrapeConfig
 import cookingblog.domain.*
-import cookingblog.repository.DoobieRepositories
-import doobie.Transactor
-import doobie.implicits.*
 import cookingblog.testing.PostgresIntegrationSuite
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
@@ -20,30 +18,34 @@ final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
   given Logger[IO] = NoOpLogger[IO]
 
   test("a durable pending job completes after the worker starts later") {
-    database.use { transactor =>
+    database.use { pool =>
       val ids = TestIds.create
       val exercise = for {
         timestamp <- Clock[IO].realTimeInstant
-        _ <- setup(transactor, ids, timestamp)
+        _ <- setup(pool, ids, timestamp)
         persistedBeforeStart <-
-          DoobieRepositories.scrapeJobs.find(ids.jobId).transact(transactor)
+          pool.use(_.scrapeJobs.find(ids.jobId))
         random <- Random.scalaUtilRandom[IO]
         worker =
           ScrapeWorker(
-            transactor,
+            pool,
             config,
             successfulScraper,
             random
           )
         result <- worker.run.use { _ =>
-          waitForTerminal(transactor, ids.jobId, 200).flatMap { completed =>
-            (
-              DoobieRepositories.scrapedDocuments
-                .findByReference(ids.referenceId),
-              DoobieRepositories.searchDocuments.find(ids.recipeId)
-            ).tupled.transact(transactor).map { case (document, search) =>
-              (completed, document, search)
-            }
+          waitForTerminal(pool, ids.jobId, 200).flatMap { completed =>
+            pool
+              .transaction { repos =>
+                (
+                  repos.scrapedDocuments
+                    .findByReference(ids.referenceId),
+                  repos.searchDocuments.find(ids.recipeId)
+                ).tupled
+              }
+              .map { case (document, search) =>
+                (completed, document, search)
+              }
           }
         }
       } yield {
@@ -56,38 +58,32 @@ final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
         assert(result._2.exists(_.contentText.contains("glazed carrot")))
         assert(result._3.exists(_.plainText.contains("restart durable keyword")))
       }
-      exercise.guarantee(deleteRecipes(transactor, List(ids.recipeId)))
+      exercise.guarantee(deleteRecipes(pool, List(ids.recipeId)))
     }
   }
 
   test("atomic claims are distinct and stale jobs recover safely") {
-    database.use { transactor =>
+    database.use { pool =>
       val first = TestIds.create
       val second = TestIds.create
       val exercise = for {
         timestamp <- Clock[IO].realTimeInstant
-        _ <- setup(transactor, first, timestamp)
-        _ <- setup(transactor, second, timestamp.plusMillis(1))
+        _ <- setup(pool, first, timestamp)
+        _ <- setup(pool, second, timestamp.plusMillis(1))
         claims <- (
-          DoobieRepositories.scrapeJobs
-            .claimNext(timestamp.plusSeconds(1))
-            .transact(transactor),
-          DoobieRepositories.scrapeJobs
-            .claimNext(timestamp.plusSeconds(1))
-            .transact(transactor)
+          pool.use(_.scrapeJobs.claimNext(timestamp.plusSeconds(1))),
+          pool.use(_.scrapeJobs.claimNext(timestamp.plusSeconds(1)))
         ).parTupled
         claimed = List(claims._1, claims._2).flatten
         recoveredCount <-
-          DoobieRepositories.scrapeJobs
-            .recoverStale(
+          pool.use(
+            _.scrapeJobs.recoverStale(
               timestamp.plusSeconds(2),
               timestamp.plusSeconds(3),
               maximumAttempts = 3
             )
-            .transact(transactor)
-        recovered <- claimed.traverse(job =>
-          DoobieRepositories.scrapeJobs.find(job.id).transact(transactor)
-        )
+          )
+        recovered <- claimed.traverse(job => pool.use(_.scrapeJobs.find(job.id)))
       } yield {
         assertEquals(claimed.size, 2)
         assertEquals(claimed.map(_.id).distinct.size, 2)
@@ -100,17 +96,17 @@ final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
         )
       }
       exercise.guarantee(
-        deleteRecipes(transactor, List(first.recipeId, second.recipeId))
+        deleteRecipes(pool, List(first.recipeId, second.recipeId))
       )
     }
   }
 
   test("retryable failures are durably rescheduled before succeeding") {
-    database.use { transactor =>
+    database.use { pool =>
       val ids = TestIds.create
       val exercise = for {
         timestamp <- Clock[IO].realTimeInstant
-        _ <- setup(transactor, ids, timestamp)
+        _ <- setup(pool, ids, timestamp)
         attempts <- Ref.of[IO, Int](0)
         scraper = new PageScraper {
           override def scrape(url: String): IO[ScrapedPage] =
@@ -123,19 +119,19 @@ final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
             }
         }
         random <- Random.scalaUtilRandom[IO]
-        worker = ScrapeWorker(transactor, config, scraper, random)
-        completed <- worker.run.use(_ => waitForTerminal(transactor, ids.jobId, 300))
+        worker = ScrapeWorker(pool, config, scraper, random)
+        completed <- worker.run.use(_ => waitForTerminal(pool, ids.jobId, 300))
       } yield {
         assertEquals(completed.status, ScrapeJobStatus.Succeeded)
         assertEquals(completed.attemptCount, 2)
         assertEquals(completed.lastError, None)
       }
-      exercise.guarantee(deleteRecipes(transactor, List(ids.recipeId)))
+      exercise.guarantee(deleteRecipes(pool, List(ids.recipeId)))
     }
   }
 
   private def setup(
-      transactor: Transactor[IO],
+      pool: Database,
       ids: TestIds,
       timestamp: Instant
   ): IO[Unit] = {
@@ -173,40 +169,38 @@ final class ScrapeWorkerIntegrationSuite extends PostgresIntegrationSuite {
         timestamp,
         timestamp
       )
-    (
-      DoobieRepositories.recipes.create(recipe) *>
-        DoobieRepositories.searchDocuments.create(
+    pool.transaction { repos =>
+      repos.recipes.create(recipe) *>
+        repos.searchDocuments.create(
           RecipeSearchDocument(ids.recipeId, recipe.title, "", timestamp)
         ) *>
-        DoobieRepositories.references.create(reference) *>
-        DoobieRepositories.scrapeJobs.create(job)
-    ).transact(transactor)
+        repos.references.create(reference) *>
+        repos.scrapeJobs.create(job)
+    }
   }
 
   private def waitForTerminal(
-      transactor: Transactor[IO],
+      pool: Database,
       jobId: ScrapeJobId,
       attemptsRemaining: Int
   ): IO[ScrapeJob] =
-    DoobieRepositories.scrapeJobs.find(jobId).transact(transactor).flatMap {
+    pool.use(_.scrapeJobs.find(jobId)).flatMap {
       case Some(job)
           if job.status == ScrapeJobStatus.Succeeded ||
             job.status == ScrapeJobStatus.Failed =>
         IO.pure(job)
       case _ if attemptsRemaining > 0 =>
         IO.sleep(10.millis) *>
-          waitForTerminal(transactor, jobId, attemptsRemaining - 1)
+          waitForTerminal(pool, jobId, attemptsRemaining - 1)
       case _ =>
         IO.raiseError(AssertionError("Scrape job did not reach a terminal state"))
     }
 
   private def deleteRecipes(
-      transactor: Transactor[IO],
+      pool: Database,
       recipeIds: List[RecipeId]
   ): IO[Unit] =
-    recipeIds
-      .traverse_(DoobieRepositories.recipes.delete)
-      .transact(transactor)
+    pool.transaction(repos => recipeIds.traverse_(repos.recipes.delete))
 
   private val successfulScraper = new PageScraper {
     override def scrape(url: String): IO[ScrapedPage] =

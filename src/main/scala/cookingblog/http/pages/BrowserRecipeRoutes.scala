@@ -4,9 +4,7 @@ import cats.effect.IO
 import cats.syntax.all.*
 import cookingblog.auth.AuthenticatedSession
 import cookingblog.domain.RecipeId
-import cookingblog.repository.DoobieRepositories
 import cookingblog.service.{ApiError, CreateRecipeInput, CreateReferenceInput, UpdateRecipeInput}
-import doobie.implicits.*
 import org.http4s.*
 import org.http4s.dsl.io.*
 import org.http4s.headers.Location
@@ -91,10 +89,8 @@ private[pages] trait BrowserRecipeRoutes {
       recipeIdValue: RecipeId,
       form: UrlForm
   ): IO[Either[ApiError, Unit]] = {
-    import DoobieRepositories.*
-    references
-      .listByRecipe(recipeIdValue)
-      .transact(transactor)
+    pool
+      .use(_.references.listByRecipe(recipeIdValue))
       .flatMap(
         _.traverse_(reference => recipeService.deleteReference(recipeIdValue, reference.id).void)
       ) *> createFormReferences(recipeIdValue, form)

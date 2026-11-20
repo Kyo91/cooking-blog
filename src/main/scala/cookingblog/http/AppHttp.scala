@@ -1,5 +1,6 @@
 package cookingblog.http
 
+import cookingblog.database.Database
 import cats.effect.{Clock, IO}
 import cats.syntax.all.*
 import cookingblog.auth.*
@@ -8,7 +9,6 @@ import cookingblog.http.api.ApiRoutes
 import cookingblog.http.pages.BrowserPageRoutes
 import cookingblog.observability.OperationalMetrics
 import cookingblog.service.{PhotoService, RecipeApiService}
-import doobie.Transactor
 import org.http4s.*
 import org.http4s.dsl.io.*
 import org.http4s.headers.{Location, `Content-Type`}
@@ -20,7 +20,7 @@ import org.typelevel.log4cats.Logger
 final class AppHttp(
     credentialsAuthenticator: CredentialsAuthenticator[IO],
     sessionManager: SessionManager[IO],
-    transactor: Transactor[IO],
+    pool: Database,
     authConfig: AuthConfig,
     photoService: PhotoService,
     recipeService: RecipeApiService,
@@ -37,11 +37,11 @@ final class AppHttp(
       sessionManager,
       recipeService,
       photoService,
-      transactor,
+      pool,
       scrapingEnabled
     )
-  private val healthRoutes = HealthRoutes(transactor, photoService)
-  private val metricsRoutes = MetricsRoutes(transactor, metrics)
+  private val healthRoutes = HealthRoutes(pool, photoService)
+  private val metricsRoutes = MetricsRoutes(pool.use(_.scrapeJobs.countsByStatus), metrics)
   private val staticRoutes = StaticRoutes(getClass.getClassLoader)
 
   def cleanupOrphanPhotos: IO[Int] = photoService.cleanupOrphans

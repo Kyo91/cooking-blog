@@ -92,8 +92,8 @@ cloud object storage, and more sophisticated search if they are needed later.
 - Cats Effect 3 for resource management, concurrency, and application lifecycle.
 - http4s for the HTTP server, routes, multipart uploads, and HTTP client.
 - Circe for JSON request/response encoding.
-- doobie with HikariCP for PostgreSQL access.
-- Flyway for ordered database migrations.
+- Skunk for pooled PostgreSQL access, with one borrowed session per transaction.
+- Flyway over JDBC for ordered database migrations; normal queries do not use JDBC.
 - ScalaTags for server-rendered HTML.
 - HTMX for debounced search and small page updates.
 - http4s authentication middleware backed by an =Authenticator[F]= interface.
@@ -126,7 +126,7 @@ Services (validation and use cases)
   |-- ScrapeService -----> http4s client
   |
   v
-DAO algebra + doobie implementation
+DAO algebra + session-bound Skunk implementation
   |
   v
 PostgreSQL <---- durable scrape-job worker
@@ -486,7 +486,7 @@ mean launching an unsupervised fiber whose work can be lost.
   store and password hashing without changing the authorization rule.
 - Protect mutation routes from CSRF.
 - Set secure headers and a restrictive content security policy.
-- Parameterize every SQL query through doobie.
+- Parameterize every SQL query through Skunk codecs.
 - Limit JSON bodies, multipart bodies, individual files, number of photos per
   request, and text field lengths.
 - Validate every nested resource relationship.
@@ -1142,6 +1142,6 @@ operation:
 4. Find it from the home search box.
 5. Open its detail page.
 
-This validates the highest-risk integration points early: HTTP routes, doobie
+This validates the highest-risk integration points early: HTTP routes, database
 transactions, worker lifecycle, extraction, indexing, and browser interaction.
 Then add meals and photos on top of the proven path.

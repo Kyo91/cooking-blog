@@ -5,7 +5,8 @@ object Dependencies {
   private val catsEffectVersion = "3.7.0"
   private val circeVersion = "0.14.15"
   private val cirisVersion = "3.10.0"
-  private val doobieVersion = "1.0.0-RC12"
+  private val skunkVersion = "1.0.0"
+  private val postgresJdbcVersion = "42.7.10"
   private val flywayVersion = "11.13.2"
   private val http4sVersion = "0.23.32"
   private val jsoupVersion = "1.22.2"
@@ -22,9 +23,8 @@ object Dependencies {
   val circeCore = "io.circe" %% "circe-core" % circeVersion
   val circeGeneric = "io.circe" %% "circe-generic" % circeVersion
   val circeParser = "io.circe" %% "circe-parser" % circeVersion
-  val doobieCore = "org.tpolecat" %% "doobie-core" % doobieVersion
-  val doobieHikari = "org.tpolecat" %% "doobie-hikari" % doobieVersion
-  val doobiePostgres = "org.tpolecat" %% "doobie-postgres" % doobieVersion
+  val skunk = "org.tpolecat" %% "skunk-core" % skunkVersion
+  val postgresJdbc = "org.postgresql" % "postgresql" % postgresJdbcVersion
   val flywayCore = "org.flywaydb" % "flyway-core" % flywayVersion
   val flywayPostgres =
     "org.flywaydb" % "flyway-database-postgresql" % flywayVersion

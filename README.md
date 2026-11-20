@@ -262,6 +262,15 @@ significant-whitespace syntax fails compilation.
 
 ## Configuration
 
+Application queries use a pooled Skunk connection to PostgreSQL. Flyway still
+runs at startup using JDBC; the schema and existing migration files are unchanged.
+Keep `DATABASE_URL` in single-host PostgreSQL JDBC format and supply credentials
+separately. The Skunk pool recognizes `ApplicationName`, `currentSchema`, and
+`sslmode` (`disable`, `prefer`, `require`, and `verify-ca`, which uses the JVM
+trust store). It does not use other JDBC driver options or support
+`sslmode=verify-full`. Do not downgrade TLS if your deployment requires hostname
+verification.
+
 | Environment variable | Development default | Purpose |
 | --- | --- | --- |
 | `APP_ENV` | `development` | Runtime policy; `production` rejects development secrets and relative photo storage |

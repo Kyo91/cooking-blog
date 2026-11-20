@@ -1,11 +1,12 @@
 package cookingblog.auth
 
+import cookingblog.database.Database
 import cats.effect.kernel.Ref
-import cats.effect.Sync
+import cats.effect.{IO, Sync}
+import cookingblog.database.Database.{affectedRows, instant}
+import skunk.codec.all.text
+import skunk.implicits.*
 import cats.syntax.all.*
-import doobie.*
-import doobie.implicits.*
-import doobie.postgres.implicits.*
 
 import java.time.Instant
 
@@ -17,74 +18,50 @@ trait SessionStore[F[_]] {
   def deleteExpiredOrInvalidated(now: Instant): F[Int]
 }
 
-final class DoobieSessionStore(transactor: Transactor[cats.effect.IO])
-    extends SessionStore[cats.effect.IO] {
-  override def create(session: SessionRecord): cats.effect.IO[Unit] =
-    sql"""
-      insert into auth_sessions (
-        token_hash,
-        principal,
-        csrf_secret_hash,
-        created_at,
-        expires_at,
-        invalidated_at
-      ) values (
-        ${session.tokenHash},
-        ${session.principal.name},
-        ${session.csrfSecretHash},
-        ${session.createdAt},
-        ${session.expiresAt},
-        ${session.invalidatedAt}
-      )
-    """.update.run.transact(transactor).void
+final class SkunkSessionStore(pool: Database) extends SessionStore[IO] {
+  private val principalCodec = text.imap(Principal.apply)(_.name)
+  private val sessionCodec =
+    (text *: principalCodec *: text *: instant *: instant *: instant.opt).to[SessionRecord]
+  private val columns =
+    sql"token_hash, principal, csrf_secret_hash, created_at, expires_at, invalidated_at"
+
+  override def create(session: SessionRecord): IO[Unit] =
+    pool
+      .withSession(_.execute(sql"""
+      insert into auth_sessions ($columns) values ($sessionCodec)
+    """.command)(session))
+      .void
 
   override def findActive(
       tokenHash: String,
       now: Instant
-  ): cats.effect.IO[Option[SessionRecord]] =
-    sql"""
-      select
-        token_hash,
-        principal,
-        csrf_secret_hash,
-        created_at,
-        expires_at,
-        invalidated_at
+  ): IO[Option[SessionRecord]] =
+    pool.withSession(_.option(sql"""
+      select $columns
       from auth_sessions
-      where token_hash = $tokenHash
+      where token_hash = $text
         and invalidated_at is null
-        and expires_at > $now
-    """
-      .query[(String, String, String, Instant, Instant, Option[Instant])]
-      .option
-      .map(
-        _.map { case (hash, principal, csrfHash, createdAt, expiresAt, invalidatedAt) =>
-          SessionRecord(
-            hash,
-            Principal(principal),
-            csrfHash,
-            createdAt,
-            expiresAt,
-            invalidatedAt
-          )
-        }
-      )
-      .transact(transactor)
+        and expires_at > $instant
+    """.query(sessionCodec))((tokenHash, now)))
 
-  override def invalidate(tokenHash: String, now: Instant): cats.effect.IO[Unit] =
-    sql"""
+  override def invalidate(tokenHash: String, now: Instant): IO[Unit] =
+    pool
+      .withSession(_.execute(sql"""
       update auth_sessions
-      set invalidated_at = $now
-      where token_hash = $tokenHash
+      set invalidated_at = $instant
+      where token_hash = $text
         and invalidated_at is null
-    """.update.run.transact(transactor).void
+    """.command)((now, tokenHash)))
+      .void
 
-  override def deleteExpiredOrInvalidated(now: Instant): cats.effect.IO[Int] =
-    sql"""
+  override def deleteExpiredOrInvalidated(now: Instant): IO[Int] =
+    pool
+      .withSession(_.execute(sql"""
       delete from auth_sessions
-      where expires_at <= $now
+      where expires_at <= $instant
         or invalidated_at is not null
-    """.update.run.transact(transactor)
+    """.command)(now))
+      .map(affectedRows)
 }
 
 object InMemorySessionStore {

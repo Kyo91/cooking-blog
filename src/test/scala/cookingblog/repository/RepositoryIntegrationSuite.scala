@@ -5,9 +5,11 @@ import cats.syntax.all.*
 import cookingblog.domain.*
 import cookingblog.service.PersistenceService
 import cookingblog.storage.StorageKey
-import doobie.implicits.*
-import doobie.postgres.implicits.*
 import cookingblog.testing.PostgresIntegrationSuite
+
+import cookingblog.database.Database.instant
+import skunk.codec.all.{text, uuid}
+import skunk.implicits.*
 
 import java.time.Instant
 import java.util.UUID
@@ -17,7 +19,7 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
   private val baseTime = Instant.parse("2026-07-25T12:00:00Z")
 
   test("migration creates every Phase 2 table") {
-    database.use { transactor =>
+    database.use { pool =>
       val expected = Set(
         "recipes",
         "meals",
@@ -29,8 +31,9 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
         "recipe_keywords"
       )
 
-      sql"""
-        select table_name
+      pool.session
+        .use(_.execute(sql"""
+        select table_name::text
         from information_schema.tables
         where table_schema = 'public'
           and table_name in (
@@ -43,54 +46,69 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
             'recipe_search_documents',
             'recipe_keywords'
           )
-      """.query[String].to[Set].transact(transactor).map { actual =>
-        assertEquals(actual, expected)
-      }
+      """.query(text)))
+        .map(_.toSet)
+        .map { actual =>
+          assertEquals(actual, expected)
+        }
     }
   }
 
   test("photo repository rejects invalid storage keys from database rows") {
-    database.use { transactor =>
+    database.use { pool =>
       val recipeId = RecipeId.random
       val mealId = MealId.random
       val photoId = PhotoId.random
       val timestamp = Instant.now()
       val invalidStorageKey = s"invalid-${PhotoId.value(photoId)}"
-      val program =
-        for {
-          _ <- DoobieRepositories.recipes.create(
-            Recipe(
-              recipeId,
-              s"Invalid photo key ${PhotoId.value(photoId)}",
-              "",
-              None,
-              timestamp,
-              timestamp,
-              None
-            )
-          )
-          _ <- DoobieRepositories.meals.create(
-            Meal(mealId, recipeId, "", timestamp, timestamp, timestamp)
-          )
-          _ <- sql"""
+      pool.session
+        .use { session =>
+          session.transaction.use { _ =>
+            val repos = new SkunkRepositories(session)
+            for {
+              _ <- repos.recipes.create(
+                Recipe(
+                  recipeId,
+                  s"Invalid photo key ${PhotoId.value(photoId)}",
+                  "",
+                  None,
+                  timestamp,
+                  timestamp,
+                  None
+                )
+              )
+              _ <- repos.meals.create(
+                Meal(mealId, recipeId, "", timestamp, timestamp, timestamp)
+              )
+              _ <- session.execute(sql"""
             insert into photos (
               id, meal_id, storage_key, original_filename, content_type, byte_size,
               width, height, comment, created_at, updated_at
             ) values (
-              ${PhotoId.value(photoId)}, ${MealId.value(mealId)}, $invalidStorageKey,
-              'photo.png', 'image/png', 1, null, null, null, $timestamp, $timestamp
+              $uuid, $uuid, $text,
+              'photo.png', 'image/png', 1, null, null, null, $instant, $instant
             )
-          """.update.run
-          result <- DoobieRepositories.photos.find(photoId).attempt
-        } yield result
-      program.transact(transactor).map { result =>
-        assert(result.left.exists(_.getMessage.startsWith("Invalid photos.storage_key:")))
-      }
+          """.command)(
+                (
+                  PhotoId.value(photoId),
+                  MealId.value(mealId),
+                  invalidStorageKey,
+                  timestamp,
+                  timestamp
+                )
+              )
+              result <- repos.photos.find(photoId).attempt
+            } yield result
+          }
+        }
+        .map { result =>
+          assert(result.left.exists(_.getMessage.startsWith("Invalid photos.storage_key:")))
+        }
     }
   }
 
   test("DAO interpreters support CRUD for every Phase 2 table") {
-    database.use { transactor =>
+    database.use { pool =>
       val recipeId = RecipeId.random
       val mealId = MealId.random
       val photoId = PhotoId.random
@@ -166,48 +184,48 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
         RecipeSearchDocument(recipeId, "initial dinner", "", baseTime)
       val updatedAt = baseTime.plusSeconds(60)
 
-      val program =
+      pool.transaction { repos =>
         for {
-          _ <- DoobieRepositories.recipes.create(recipe)
-          readRecipe <- DoobieRepositories.recipes.find(recipeId)
-          updatedRecipe <- DoobieRepositories.recipes.updateDetails(
+          _ <- repos.recipes.create(recipe)
+          readRecipe <- repos.recipes.find(recipeId)
+          updatedRecipe <- repos.recipes.updateDetails(
             recipe.id,
             recipe.title,
             "updated",
             updatedAt
           )
           recipeUpdated = updatedRecipe.nonEmpty
-          listedRecipes <- DoobieRepositories.recipes.list
-          _ <- DoobieRepositories.meals.create(meal)
-          readMeal <- DoobieRepositories.meals.find(mealId)
-          mealUpdated <- DoobieRepositories.meals.update(
+          listedRecipes <- repos.recipes.list
+          _ <- repos.meals.create(meal)
+          readMeal <- repos.meals.find(mealId)
+          mealUpdated <- repos.meals.update(
             meal.copy(notes = "updated", updatedAt = updatedAt)
           )
-          listedMeals <- DoobieRepositories.meals.listByRecipe(recipeId)
-          _ <- DoobieRepositories.photos.create(photo)
-          readPhoto <- DoobieRepositories.photos.find(photoId)
-          photoUpdated <- DoobieRepositories.photos.update(
+          listedMeals <- repos.meals.listByRecipe(recipeId)
+          _ <- repos.photos.create(photo)
+          readPhoto <- repos.photos.find(photoId)
+          photoUpdated <- repos.photos.update(
             photo.copy(comment = Some("updated"), updatedAt = updatedAt)
           )
-          listedPhotos <- DoobieRepositories.photos.listByMeal(mealId)
-          _ <- DoobieRepositories.references.create(reference)
-          readReference <- DoobieRepositories.references.find(referenceId)
-          referenceUpdated <- DoobieRepositories.references.update(
+          listedPhotos <- repos.photos.listByMeal(mealId)
+          _ <- repos.references.create(reference)
+          readReference <- repos.references.find(referenceId)
+          referenceUpdated <- repos.references.update(
             reference.copy(displayName = Some("Updated"), updatedAt = updatedAt)
           )
           listedReferences <-
-            DoobieRepositories.references.listByRecipe(recipeId)
-          _ <- DoobieRepositories.scrapedDocuments.create(document)
+            repos.references.listByRecipe(recipeId)
+          _ <- repos.scrapedDocuments.create(document)
           readDocument <-
-            DoobieRepositories.scrapedDocuments.find(documentId)
+            repos.scrapedDocuments.find(documentId)
           readDocumentByReference <-
-            DoobieRepositories.scrapedDocuments.findByReference(referenceId)
-          documentUpdated <- DoobieRepositories.scrapedDocuments.update(
+            repos.scrapedDocuments.findByReference(referenceId)
+          documentUpdated <- repos.scrapedDocuments.update(
             document.copy(contentText = "Updated.", updatedAt = updatedAt)
           )
-          _ <- DoobieRepositories.scrapeJobs.create(job)
-          readJob <- DoobieRepositories.scrapeJobs.find(jobId)
-          jobUpdated <- DoobieRepositories.scrapeJobs.update(
+          _ <- repos.scrapeJobs.create(job)
+          readJob <- repos.scrapeJobs.find(jobId)
+          jobUpdated <- repos.scrapeJobs.update(
             job.copy(
               status = ScrapeJobStatus.Running,
               attemptCount = 1,
@@ -215,32 +233,32 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
               updatedAt = updatedAt
             )
           )
-          listedJobs <- DoobieRepositories.scrapeJobs.listByReference(referenceId)
-          _ <- DoobieRepositories.searchDocuments.create(search)
-          readSearch <- DoobieRepositories.searchDocuments.find(recipeId)
-          searchUpdated <- DoobieRepositories.searchDocuments.update(
+          listedJobs <- repos.scrapeJobs.listByReference(referenceId)
+          _ <- repos.searchDocuments.create(search)
+          readSearch <- repos.searchDocuments.find(recipeId)
+          searchUpdated <- repos.searchDocuments.update(
             search.copy(plainText = "updated dinner", updatedAt = updatedAt)
           )
           deletedSearch <-
-            DoobieRepositories.searchDocuments.delete(recipeId)
-          deletedJob <- DoobieRepositories.scrapeJobs.delete(jobId)
+            repos.searchDocuments.delete(recipeId)
+          deletedJob <- repos.scrapeJobs.delete(jobId)
           deletedDocument <-
-            DoobieRepositories.scrapedDocuments.delete(documentId)
+            repos.scrapedDocuments.delete(documentId)
           deletedReference <-
-            DoobieRepositories.references.delete(referenceId)
-          deletedPhoto <- DoobieRepositories.photos.delete(photoId)
-          deletedMeal <- DoobieRepositories.meals.delete(mealId)
-          deletedRecipe <- DoobieRepositories.recipes.delete(recipeId)
+            repos.references.delete(referenceId)
+          deletedPhoto <- repos.photos.delete(photoId)
+          deletedMeal <- repos.meals.delete(mealId)
+          deletedRecipe <- repos.recipes.delete(recipeId)
           searchAfterDelete <-
-            DoobieRepositories.searchDocuments.find(recipeId)
-          jobAfterDelete <- DoobieRepositories.scrapeJobs.find(jobId)
+            repos.searchDocuments.find(recipeId)
+          jobAfterDelete <- repos.scrapeJobs.find(jobId)
           documentAfterDelete <-
-            DoobieRepositories.scrapedDocuments.find(documentId)
+            repos.scrapedDocuments.find(documentId)
           referenceAfterDelete <-
-            DoobieRepositories.references.find(referenceId)
-          photoAfterDelete <- DoobieRepositories.photos.find(photoId)
-          mealAfterDelete <- DoobieRepositories.meals.find(mealId)
-          recipeAfterDelete <- DoobieRepositories.recipes.find(recipeId)
+            repos.references.find(referenceId)
+          photoAfterDelete <- repos.photos.find(photoId)
+          mealAfterDelete <- repos.meals.find(mealId)
+          recipeAfterDelete <- repos.recipes.find(recipeId)
         } yield {
           assertEquals(readRecipe, Some(recipe))
           assert(recipeUpdated)
@@ -290,13 +308,13 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
           )
         }
 
-      program.transact(transactor)
+      }
     }
   }
 
   test("service transactions maintain invariants and roll back atomically") {
-    database.use { transactor =>
-      val service = PersistenceService(transactor)
+    database.use { pool =>
+      val service = PersistenceService(pool)
       val recipeId = RecipeId.random
       val firstMealId = MealId.random
       val secondMealId = MealId.random
@@ -363,17 +381,17 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
           _ <- service.createRecipe(recipe, search)
           _ <- service.createMeal(firstMeal)
           afterFirst <-
-            DoobieRepositories.recipes.find(recipeId).transact(transactor)
+            pool.use(_.recipes.find(recipeId))
           _ <- service.createMeal(secondMeal)
           afterSecond <-
-            DoobieRepositories.recipes.find(recipeId).transact(transactor)
+            pool.use(_.recipes.find(recipeId))
           _ <- service.deleteMeal(secondMealId, baseTime.plusSeconds(7200))
           afterDelete <-
-            DoobieRepositories.recipes.find(recipeId).transact(transactor)
+            pool.use(_.recipes.find(recipeId))
           rollbackResult <-
             service.createReferenceAndJob(reference, invalidJob).attempt
           rolledBackReference <-
-            DoobieRepositories.references.find(referenceId).transact(transactor)
+            pool.use(_.references.find(referenceId))
         } yield {
           assertEquals(afterFirst.flatMap(_.lastMadeAt), Some(firstCookedAt))
           assertEquals(afterSecond.flatMap(_.lastMadeAt), Some(secondCookedAt))
@@ -383,13 +401,13 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
         }
 
       exercise.guarantee(
-        DoobieRepositories.recipes.delete(recipeId).transact(transactor).void
+        pool.use(_.recipes.delete(recipeId)).void
       )
     }
   }
 
   test("database constraints enforce core domain invariants") {
-    database.use { transactor =>
+    database.use { pool =>
       val firstId = RecipeId.random
       val secondId = RecipeId.random
       val mealId = MealId.random
@@ -427,29 +445,37 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
 
       val exercise =
         for {
-          _ <- DoobieRepositories.recipes.create(first).transact(transactor)
-          _ <- DoobieRepositories.meals.create(meal).transact(transactor)
+          _ <- pool.use(_.recipes.create(first))
+          _ <- pool.use(_.meals.create(meal))
           duplicateResult <-
-            DoobieRepositories.recipes.create(duplicate).transact(transactor).attempt
+            pool.use(_.recipes.create(duplicate)).attempt
           invalidPhotoResult <-
-            DoobieRepositories.photos
-              .create(invalidPhoto)
-              .transact(transactor)
-              .attempt
+            pool.use(_.photos.create(invalidPhoto)).attempt
           invalidReferenceResult <-
-            sql"""
+            pool.session
+              .use(
+                _.execute(sql"""
               insert into recipe_references (
                 id, recipe_id, kind, url, citation, created_at, updated_at
               ) values (
-                ${ReferenceId.value(invalidReferenceId)},
-                ${RecipeId.value(firstId)},
+                $uuid,
+                $uuid,
                 'book',
                 'https://example.com/invalid',
                 null,
-                $baseTime,
-                $baseTime
+                $instant,
+                $instant
               )
-            """.update.run.transact(transactor).attempt
+            """.command)(
+                  (
+                    ReferenceId.value(invalidReferenceId),
+                    RecipeId.value(firstId),
+                    baseTime,
+                    baseTime
+                  )
+                )
+              )
+              .attempt
         } yield {
           assert(duplicateResult.isLeft)
           assert(invalidPhotoResult.isLeft)
@@ -457,9 +483,7 @@ final class RepositoryIntegrationSuite extends PostgresIntegrationSuite {
         }
 
       exercise.guarantee(
-        List(firstId, secondId)
-          .traverse_(DoobieRepositories.recipes.delete(_))
-          .transact(transactor)
+        pool.transaction(repos => List(firstId, secondId).traverse_(repos.recipes.delete))
       )
     }
   }

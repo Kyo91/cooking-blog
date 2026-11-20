@@ -3,9 +3,11 @@ package cookingblog.repository
 import cats.syntax.all.*
 import cookingblog.domain.*
 import cookingblog.storage.StorageKey
-import doobie.*
-import doobie.implicits.*
-import doobie.postgres.implicits.*
+import cats.effect.IO
+import cookingblog.database.Database.{affectedRows, instant}
+import skunk.{Codec, Decoder, Session}
+import skunk.codec.all.*
+import skunk.implicits.*
 
 import java.time.Instant
 import java.util.UUID
@@ -89,6 +91,7 @@ trait ScrapeJobRepository[F[_]] {
   def update(job: ScrapeJob): F[Boolean]
   def delete(id: ScrapeJobId): F[Boolean]
   def listByReference(referenceId: ReferenceId): F[List[ScrapeJob]]
+  def countsByStatus: F[Map[String, Long]]
 }
 
 /** Maintains and queries the denormalized PostgreSQL full-text search projection. */
@@ -107,40 +110,21 @@ trait RecipeKeywordRepository[F[_]] {
   def replace(recipeId: RecipeId, keywords: List[String]): F[Unit]
 }
 
-object DoobieRepositories {
-  val recipes: RecipeRepository[ConnectionIO] = DoobieRecipeRepository
-  val meals: MealRepository[ConnectionIO] = DoobieMealRepository
-  val photos: PhotoRepository[ConnectionIO] = DoobiePhotoRepository
-  val references: RecipeReferenceRepository[ConnectionIO] =
-    DoobieRecipeReferenceRepository
-  val scrapedDocuments: ScrapedDocumentRepository[ConnectionIO] =
-    DoobieScrapedDocumentRepository
-  val scrapeJobs: ScrapeJobRepository[ConnectionIO] = DoobieScrapeJobRepository
-  val searchDocuments: RecipeSearchDocumentRepository[ConnectionIO] =
-    DoobieRecipeSearchDocumentRepository
-  val keywords: RecipeKeywordRepository[ConnectionIO] = DoobieRecipeKeywordRepository
+final class SkunkRepositories(session: Session[IO]) {
+  val recipes: RecipeRepository[IO] = new SkunkRecipeRepository(session)
+  val meals: MealRepository[IO] = new SkunkMealRepository(session)
+  val photos: PhotoRepository[IO] = new SkunkPhotoRepository(session)
+  val references: RecipeReferenceRepository[IO] =
+    new SkunkRecipeReferenceRepository(session)
+  val scrapedDocuments: ScrapedDocumentRepository[IO] =
+    new SkunkScrapedDocumentRepository(session)
+  val scrapeJobs: ScrapeJobRepository[IO] = new SkunkScrapeJobRepository(session)
+  val searchDocuments: RecipeSearchDocumentRepository[IO] =
+    new SkunkRecipeSearchDocumentRepository(session)
+  val keywords: RecipeKeywordRepository[IO] = new SkunkRecipeKeywordRepository(session)
 }
 
 private object RepositoryMapping {
-  final case class RecipeRow(
-      id: UUID,
-      title: String,
-      description: String,
-      primaryPhotoId: Option[UUID],
-      createdAt: Instant,
-      updatedAt: Instant,
-      lastMadeAt: Option[Instant]
-  )
-
-  final case class MealRow(
-      id: UUID,
-      recipeId: UUID,
-      notes: String,
-      cookedAt: Instant,
-      createdAt: Instant,
-      updatedAt: Instant
-  )
-
   final case class PhotoRow(
       id: UUID,
       mealId: UUID,
@@ -193,26 +177,32 @@ private object RepositoryMapping {
       updatedAt: Instant
   )
 
-  def recipe(row: RecipeRow): Recipe =
-    Recipe(
-      RecipeId(row.id),
-      row.title,
-      row.description,
-      row.primaryPhotoId.map(PhotoId(_)),
-      row.createdAt,
-      row.updatedAt,
-      row.lastMadeAt
-    )
+  val recipeIdCodec: Codec[RecipeId] = uuid.imap(RecipeId.apply)(RecipeId.value)
+  val mealIdCodec: Codec[MealId] = uuid.imap(MealId.apply)(MealId.value)
+  val photoIdCodec: Codec[PhotoId] = uuid.imap(PhotoId.apply)(PhotoId.value)
 
-  def meal(row: MealRow): Meal =
-    Meal(
-      MealId(row.id),
-      RecipeId(row.recipeId),
-      row.notes,
-      row.cookedAt,
-      row.createdAt,
-      row.updatedAt
-    )
+  val recipeCodec: Codec[Recipe] =
+    (recipeIdCodec *: text *: text *: photoIdCodec.opt *: instant *: instant *: instant.opt)
+      .to[Recipe]
+
+  val mealCodec: Codec[Meal] =
+    (mealIdCodec *: recipeIdCodec *: text *: instant *: instant *: instant).to[Meal]
+
+  val photoRowDecoder: Decoder[PhotoRow] =
+    (uuid *: uuid *: text *: text *: text *: int8 *: int4.opt *: int4.opt *: text.opt *: instant *: instant)
+      .to[PhotoRow]
+
+  val referenceRowDecoder: Decoder[ReferenceRow] =
+    (uuid *: uuid *: text *: text.opt *: text.opt *: text.opt *: instant *: instant)
+      .to[ReferenceRow]
+
+  val scrapedDocumentRowDecoder: Decoder[ScrapedDocumentRow] =
+    (uuid *: uuid *: text *: text.opt *: text.opt *: text *: text *: text.opt *: text.opt *: instant *: instant)
+      .to[ScrapedDocumentRow]
+
+  val scrapeJobRowDecoder: Decoder[ScrapeJobRow] =
+    (uuid *: uuid *: text *: int4 *: instant *: instant.opt *: instant.opt *: text.opt *: instant *: instant)
+      .to[ScrapeJobRow]
 
   def photo(row: PhotoRow): Either[IllegalStateException, Photo] =
     StorageKey
@@ -289,396 +279,554 @@ private object RepositoryMapping {
   }
 }
 
-private object DoobieRecipeRepository extends RecipeRepository[ConnectionIO] {
+private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(recipe: Recipe): ConnectionIO[Unit] =
-    sql"""
-      insert into recipes (
-        id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-      ) values (
-        ${RecipeId.value(recipe.id)},
-        ${recipe.title},
-        ${recipe.description},
-        ${recipe.primaryPhotoId.map(PhotoId.value)},
-        ${recipe.createdAt},
-        ${recipe.updatedAt},
-        ${recipe.lastMadeAt}
-      )
-    """.update.run.void
+  private val columns =
+    sql"id, title, description, primary_photo_id, created_at, updated_at, last_made_at"
 
-  override def find(id: RecipeId): ConnectionIO[Option[Recipe]] =
-    sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-      from recipes
-      where id = ${RecipeId.value(id)}
-    """.query[RecipeRow].option.map(_.map(recipe))
+  override def create(recipe: Recipe): IO[Unit] =
+    session
+      .execute(sql"""
+      insert into recipes ($columns) values ($recipeCodec)
+    """.command)(recipe)
+      .void
 
-  override def findForUpdate(id: RecipeId): ConnectionIO[Option[Recipe]] =
-    sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+  override def find(id: RecipeId): IO[Option[Recipe]] =
+    session
+      .option(sql"""
+      select $columns
       from recipes
-      where id = ${RecipeId.value(id)}
+      where id = $recipeIdCodec
+    """.query(recipeCodec))(id)
+
+  override def findForUpdate(id: RecipeId): IO[Option[Recipe]] =
+    session
+      .option(sql"""
+      select $columns
+      from recipes
+      where id = $recipeIdCodec
       for update
-    """.query[RecipeRow].option.map(_.map(recipe))
+    """.query(recipeCodec))(id)
 
   override def updateDetails(
       id: RecipeId,
       title: String,
       description: String,
       updatedAt: Instant
-  ): ConnectionIO[Option[Recipe]] =
-    sql"""
+  ): IO[Option[Recipe]] =
+    session
+      .option(sql"""
       update recipes
-      set title = $title, description = $description, updated_at = $updatedAt
-      where id = ${RecipeId.value(id)}
-      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-    """.query[RecipeRow].option.map(_.map(recipe))
+      set title = $text, description = $text, updated_at = $instant
+      where id = $recipeIdCodec
+      returning $columns
+    """.query(recipeCodec))((title, description, updatedAt, id))
 
   override def setPrimaryPhoto(
       id: RecipeId,
       photoId: PhotoId,
       updatedAt: Instant
-  ): ConnectionIO[Option[Recipe]] =
-    sql"""
+  ): IO[Option[Recipe]] =
+    session
+      .option(sql"""
       update recipes
-      set primary_photo_id = ${PhotoId.value(photoId)}, updated_at = $updatedAt
-      where id = ${RecipeId.value(id)}
-      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-    """.query[RecipeRow].option.map(_.map(recipe))
+      set primary_photo_id = $photoIdCodec, updated_at = $instant
+      where id = $recipeIdCodec
+      returning $columns
+    """.query(recipeCodec))((photoId, updatedAt, id))
 
-  override def delete(id: RecipeId): ConnectionIO[Boolean] =
-    sql"delete from recipes where id = ${RecipeId.value(id)}".update.run.map(_ > 0)
+  override def delete(id: RecipeId): IO[Boolean] =
+    session
+      .execute(sql"delete from recipes where id = $recipeIdCodec".command)(id)
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def list: ConnectionIO[List[Recipe]] =
-    sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+  override def list: IO[List[Recipe]] =
+    session
+      .execute(sql"""
+      select $columns
       from recipes
       order by coalesce(last_made_at, updated_at) desc, id
-    """.query[RecipeRow].to[List].map(_.map(recipe))
+    """.query(recipeCodec))
 
   override def refreshLastMadeAt(
       id: RecipeId,
       updatedAt: Instant
-  ): ConnectionIO[Boolean] =
-    sql"""
+  ): IO[Boolean] =
+    session
+      .execute(sql"""
       update recipes
       set last_made_at = (
             select max(cooked_at)
             from meals
-            where recipe_id = ${RecipeId.value(id)}
+            where recipe_id = $recipeIdCodec
           ),
-          updated_at = $updatedAt
-      where id = ${RecipeId.value(id)}
-    """.update.run.map(_ > 0)
+          updated_at = $instant
+      where id = $recipeIdCodec
+    """.command)((id, updatedAt, id))
+      .map(affectedRows)
+      .map(_ > 0)
 }
 
-private object DoobieMealRepository extends MealRepository[ConnectionIO] {
+private final class SkunkMealRepository(session: Session[IO]) extends MealRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(meal: Meal): ConnectionIO[Unit] =
-    sql"""
-      insert into meals (id, recipe_id, notes, cooked_at, created_at, updated_at)
-      values (
-        ${MealId.value(meal.id)},
-        ${RecipeId.value(meal.recipeId)},
-        ${meal.notes},
-        ${meal.cookedAt},
-        ${meal.createdAt},
-        ${meal.updatedAt}
-      )
-    """.update.run.void
+  private val columns = sql"id, recipe_id, notes, cooked_at, created_at, updated_at"
 
-  override def find(id: MealId): ConnectionIO[Option[Meal]] =
-    sql"""
-      select id, recipe_id, notes, cooked_at, created_at, updated_at
+  override def create(meal: Meal): IO[Unit] =
+    session
+      .execute(sql"""
+      insert into meals ($columns) values ($mealCodec)
+    """.command)(meal)
+      .void
+
+  override def find(id: MealId): IO[Option[Meal]] =
+    session
+      .option(sql"""
+      select $columns
       from meals
-      where id = ${MealId.value(id)}
-    """.query[MealRow].option.map(_.map(meal))
+      where id = $mealIdCodec
+    """.query(mealCodec))(id)
 
-  override def update(meal: Meal): ConnectionIO[Boolean] =
-    sql"""
+  override def update(meal: Meal): IO[Boolean] =
+    session
+      .execute(sql"""
       update meals
-      set recipe_id = ${RecipeId.value(meal.recipeId)},
-          notes = ${meal.notes},
-          cooked_at = ${meal.cookedAt},
-          updated_at = ${meal.updatedAt}
-      where id = ${MealId.value(meal.id)}
-    """.update.run.map(_ > 0)
+      set recipe_id = $recipeIdCodec,
+          notes = $text,
+          cooked_at = $instant,
+          updated_at = $instant
+      where id = $mealIdCodec
+    """.command)(
+        (
+          meal.recipeId,
+          meal.notes,
+          meal.cookedAt,
+          meal.updatedAt,
+          meal.id
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def delete(id: MealId): ConnectionIO[Boolean] =
-    sql"delete from meals where id = ${MealId.value(id)}".update.run.map(_ > 0)
+  override def delete(id: MealId): IO[Boolean] =
+    session
+      .execute(sql"delete from meals where id = $mealIdCodec".command)(id)
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[Meal]] =
-    sql"""
-      select id, recipe_id, notes, cooked_at, created_at, updated_at
+  override def listByRecipe(recipeId: RecipeId): IO[List[Meal]] =
+    session
+      .execute(sql"""
+      select $columns
       from meals
-      where recipe_id = ${RecipeId.value(recipeId)}
+      where recipe_id = $recipeIdCodec
       order by cooked_at desc, id
-    """.query[MealRow].to[List].map(_.map(meal))
+    """.query(mealCodec))(recipeId)
 }
 
-private object DoobiePhotoRepository extends PhotoRepository[ConnectionIO] {
+private final class SkunkPhotoRepository(session: Session[IO]) extends PhotoRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(photo: Photo): ConnectionIO[Unit] =
-    sql"""
+  override def create(photo: Photo): IO[Unit] =
+    session
+      .execute(sql"""
       insert into photos (
         id, meal_id, storage_key, original_filename, content_type, byte_size,
         width, height, comment, created_at, updated_at
       ) values (
-        ${PhotoId.value(photo.id)},
-        ${MealId.value(photo.mealId)},
-        ${StorageKey.value(photo.storageKey)},
-        ${photo.originalFilename},
-        ${photo.contentType},
-        ${photo.byteSize},
-        ${photo.width},
-        ${photo.height},
-        ${photo.comment},
-        ${photo.createdAt},
-        ${photo.updatedAt}
+        $uuid,
+        $uuid,
+        $text,
+        $text,
+        $text,
+        $int8,
+        ${int4.opt},
+        ${int4.opt},
+        ${text.opt},
+        $instant,
+        $instant
       )
-    """.update.run.void
+    """.command)(
+        (
+          PhotoId.value(photo.id),
+          MealId.value(photo.mealId),
+          StorageKey.value(photo.storageKey),
+          photo.originalFilename,
+          photo.contentType,
+          photo.byteSize,
+          photo.width,
+          photo.height,
+          photo.comment,
+          photo.createdAt,
+          photo.updatedAt
+        )
+      )
+      .void
 
-  override def find(id: PhotoId): ConnectionIO[Option[Photo]] =
-    sql"""
+  override def find(id: PhotoId): IO[Option[Photo]] =
+    session
+      .option(sql"""
       select id, meal_id, storage_key, original_filename, content_type, byte_size,
              width, height, comment, created_at, updated_at
       from photos
-      where id = ${PhotoId.value(id)}
-    """.query[PhotoRow].option.flatMap(_.traverse(photo).liftTo[ConnectionIO])
+      where id = $uuid
+    """.query(photoRowDecoder))(PhotoId.value(id))
+      .flatMap(_.traverse(photo).liftTo[IO])
 
-  override def update(photo: Photo): ConnectionIO[Boolean] =
-    sql"""
+  override def update(photo: Photo): IO[Boolean] =
+    session
+      .execute(sql"""
       update photos
-      set meal_id = ${MealId.value(photo.mealId)},
-          storage_key = ${StorageKey.value(photo.storageKey)},
-          original_filename = ${photo.originalFilename},
-          content_type = ${photo.contentType},
-          byte_size = ${photo.byteSize},
-          width = ${photo.width},
-          height = ${photo.height},
-          comment = ${photo.comment},
-          updated_at = ${photo.updatedAt}
-      where id = ${PhotoId.value(photo.id)}
-    """.update.run.map(_ > 0)
+      set meal_id = $uuid,
+          storage_key = $text,
+          original_filename = $text,
+          content_type = $text,
+          byte_size = $int8,
+          width = ${int4.opt},
+          height = ${int4.opt},
+          comment = ${text.opt},
+          updated_at = $instant
+      where id = $uuid
+    """.command)(
+        (
+          MealId.value(photo.mealId),
+          StorageKey.value(photo.storageKey),
+          photo.originalFilename,
+          photo.contentType,
+          photo.byteSize,
+          photo.width,
+          photo.height,
+          photo.comment,
+          photo.updatedAt,
+          PhotoId.value(photo.id)
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def delete(id: PhotoId): ConnectionIO[Boolean] =
-    sql"delete from photos where id = ${PhotoId.value(id)}".update.run.map(_ > 0)
+  override def delete(id: PhotoId): IO[Boolean] =
+    session
+      .execute(sql"delete from photos where id = $uuid".command)(PhotoId.value(id))
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def listByMeal(mealId: MealId): ConnectionIO[List[Photo]] =
-    sql"""
+  override def listByMeal(mealId: MealId): IO[List[Photo]] =
+    session
+      .execute(sql"""
       select id, meal_id, storage_key, original_filename, content_type, byte_size,
              width, height, comment, created_at, updated_at
       from photos
-      where meal_id = ${MealId.value(mealId)}
+      where meal_id = $uuid
       order by created_at, id
-    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
+    """.query(photoRowDecoder))(MealId.value(mealId))
+      .flatMap(_.traverse(photo).liftTo[IO])
 
-  override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[Photo]] =
-    sql"""
+  override def listByRecipe(recipeId: RecipeId): IO[List[Photo]] =
+    session
+      .execute(sql"""
       select p.id, p.meal_id, p.storage_key, p.original_filename, p.content_type,
              p.byte_size, p.width, p.height, p.comment, p.created_at, p.updated_at
       from photos p
       join meals m on m.id = p.meal_id
-      where m.recipe_id = ${RecipeId.value(recipeId)}
+      where m.recipe_id = $uuid
       order by m.cooked_at desc, p.created_at desc, p.id
-    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
+    """.query(photoRowDecoder))(RecipeId.value(recipeId))
+      .flatMap(_.traverse(photo).liftTo[IO])
 
-  override def listAll: ConnectionIO[List[Photo]] =
-    sql"""
+  override def listAll: IO[List[Photo]] =
+    session
+      .execute(sql"""
       select id, meal_id, storage_key, original_filename, content_type, byte_size,
              width, height, comment, created_at, updated_at
       from photos
       order by id
-    """.query[PhotoRow].to[List].flatMap(_.traverse(photo).liftTo[ConnectionIO])
+    """.query(photoRowDecoder))
+      .flatMap(_.traverse(photo).liftTo[IO])
 
-  override def listStorageKeys: ConnectionIO[List[StorageKey]] =
-    sql"select storage_key from photos"
-      .query[String]
-      .to[List]
-      .flatMap(_.traverse(storageKey).liftTo[ConnectionIO])
+  override def listStorageKeys: IO[List[StorageKey]] =
+    session
+      .execute(sql"select storage_key from photos".query(text))
+      .flatMap(_.traverse(storageKey).liftTo[IO])
 
   override def findPrimaryForRecipe(
       recipeId: RecipeId
-  ): ConnectionIO[Option[Photo]] =
-    sql"""
+  ): IO[Option[Photo]] =
+    session
+      .option(sql"""
       select p.id, p.meal_id, p.storage_key, p.original_filename, p.content_type,
              p.byte_size, p.width, p.height, p.comment, p.created_at, p.updated_at
       from recipes r
       join meals m on m.recipe_id = r.id
       join photos p on p.meal_id = m.id
-      where r.id = ${RecipeId.value(recipeId)}
+      where r.id = $uuid
       order by (p.id = r.primary_photo_id) desc,
                m.cooked_at desc,
                p.created_at desc,
                p.id
       limit 1
-    """.query[PhotoRow].option.flatMap(_.traverse(photo).liftTo[ConnectionIO])
+    """.query(photoRowDecoder))(RecipeId.value(recipeId))
+      .flatMap(_.traverse(photo).liftTo[IO])
 }
 
-private object DoobieRecipeReferenceRepository extends RecipeReferenceRepository[ConnectionIO] {
+private final class SkunkRecipeReferenceRepository(session: Session[IO])
+    extends RecipeReferenceRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(reference: RecipeReference): ConnectionIO[Unit] =
-    sql"""
+  override def create(reference: RecipeReference): IO[Unit] =
+    session
+      .execute(sql"""
       insert into recipe_references (
         id, recipe_id, kind, url, citation, display_name, created_at, updated_at
       ) values (
-        ${ReferenceId.value(reference.id)},
-        ${RecipeId.value(reference.recipeId)},
-        ${reference.kind.databaseValue},
-        ${reference.url},
-        ${reference.citation},
-        ${reference.displayName},
-        ${reference.createdAt},
-        ${reference.updatedAt}
+        $uuid,
+        $uuid,
+        $text,
+        ${text.opt},
+        ${text.opt},
+        ${text.opt},
+        $instant,
+        $instant
       )
-    """.update.run.void
+    """.command)(
+        (
+          ReferenceId.value(reference.id),
+          RecipeId.value(reference.recipeId),
+          reference.kind.databaseValue,
+          reference.url,
+          reference.citation,
+          reference.displayName,
+          reference.createdAt,
+          reference.updatedAt
+        )
+      )
+      .void
 
-  override def find(id: ReferenceId): ConnectionIO[Option[RecipeReference]] =
-    sql"""
+  override def find(id: ReferenceId): IO[Option[RecipeReference]] =
+    session
+      .option(sql"""
       select id, recipe_id, kind, url, citation, display_name, created_at, updated_at
       from recipe_references
-      where id = ${ReferenceId.value(id)}
-    """.query[ReferenceRow].option.map(_.map(reference))
+      where id = $uuid
+    """.query(referenceRowDecoder))(ReferenceId.value(id))
+      .map(_.map(reference))
 
-  override def update(reference: RecipeReference): ConnectionIO[Boolean] =
-    sql"""
+  override def update(reference: RecipeReference): IO[Boolean] =
+    session
+      .execute(sql"""
       update recipe_references
-      set recipe_id = ${RecipeId.value(reference.recipeId)},
-          kind = ${reference.kind.databaseValue},
-          url = ${reference.url},
-          citation = ${reference.citation},
-          display_name = ${reference.displayName},
-          updated_at = ${reference.updatedAt}
-      where id = ${ReferenceId.value(reference.id)}
-    """.update.run.map(_ > 0)
+      set recipe_id = $uuid,
+          kind = $text,
+          url = ${text.opt},
+          citation = ${text.opt},
+          display_name = ${text.opt},
+          updated_at = $instant
+      where id = $uuid
+    """.command)(
+        (
+          RecipeId.value(reference.recipeId),
+          reference.kind.databaseValue,
+          reference.url,
+          reference.citation,
+          reference.displayName,
+          reference.updatedAt,
+          ReferenceId.value(reference.id)
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def delete(id: ReferenceId): ConnectionIO[Boolean] =
-    sql"""
+  override def delete(id: ReferenceId): IO[Boolean] =
+    session
+      .execute(sql"""
       delete from recipe_references
-      where id = ${ReferenceId.value(id)}
-    """.update.run.map(_ > 0)
+      where id = $uuid
+    """.command)(ReferenceId.value(id))
+      .map(affectedRows)
+      .map(_ > 0)
 
   override def listByRecipe(
       recipeId: RecipeId
-  ): ConnectionIO[List[RecipeReference]] =
-    sql"""
+  ): IO[List[RecipeReference]] =
+    session
+      .execute(sql"""
       select id, recipe_id, kind, url, citation, display_name, created_at, updated_at
       from recipe_references
-      where recipe_id = ${RecipeId.value(recipeId)}
+      where recipe_id = $uuid
       order by created_at, id
-    """.query[ReferenceRow].to[List].map(_.map(reference))
+    """.query(referenceRowDecoder))(RecipeId.value(recipeId))
+      .map(_.map(reference))
 }
 
-private object DoobieScrapedDocumentRepository extends ScrapedDocumentRepository[ConnectionIO] {
+private final class SkunkScrapedDocumentRepository(session: Session[IO])
+    extends ScrapedDocumentRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(document: ScrapedDocument): ConnectionIO[Unit] =
-    sql"""
+  override def create(document: ScrapedDocument): IO[Unit] =
+    session
+      .execute(sql"""
       insert into scraped_documents (
         id, reference_id, source_url, resolved_url, title, content_text,
         content_hash, http_etag, http_last_modified, scraped_at, updated_at
       ) values (
-        ${ScrapedDocumentId.value(document.id)},
-        ${ReferenceId.value(document.referenceId)},
-        ${document.sourceUrl},
-        ${document.resolvedUrl},
-        ${document.title},
-        ${document.contentText},
-        ${document.contentHash},
-        ${document.httpEtag},
-        ${document.httpLastModified},
-        ${document.scrapedAt},
-        ${document.updatedAt}
+        $uuid,
+        $uuid,
+        $text,
+        ${text.opt},
+        ${text.opt},
+        $text,
+        $text,
+        ${text.opt},
+        ${text.opt},
+        $instant,
+        $instant
       )
-    """.update.run.void
+    """.command)(
+        (
+          ScrapedDocumentId.value(document.id),
+          ReferenceId.value(document.referenceId),
+          document.sourceUrl,
+          document.resolvedUrl,
+          document.title,
+          document.contentText,
+          document.contentHash,
+          document.httpEtag,
+          document.httpLastModified,
+          document.scrapedAt,
+          document.updatedAt
+        )
+      )
+      .void
 
   override def find(
       id: ScrapedDocumentId
-  ): ConnectionIO[Option[ScrapedDocument]] =
-    select(fr"where id = ${ScrapedDocumentId.value(id)}").option
+  ): IO[Option[ScrapedDocument]] =
+    session
+      .option(sql"$select where id = $uuid".query(scrapedDocumentRowDecoder))(
+        ScrapedDocumentId.value(id)
+      )
+      .map(_.map(scrapedDocument))
 
   override def findByReference(
       referenceId: ReferenceId
-  ): ConnectionIO[Option[ScrapedDocument]] =
-    select(fr"where reference_id = ${ReferenceId.value(referenceId)}").option
+  ): IO[Option[ScrapedDocument]] =
+    session
+      .option(sql"$select where reference_id = $uuid".query(scrapedDocumentRowDecoder))(
+        ReferenceId.value(referenceId)
+      )
+      .map(_.map(scrapedDocument))
 
-  override def update(document: ScrapedDocument): ConnectionIO[Boolean] =
-    sql"""
+  override def update(document: ScrapedDocument): IO[Boolean] =
+    session
+      .execute(sql"""
       update scraped_documents
-      set reference_id = ${ReferenceId.value(document.referenceId)},
-          source_url = ${document.sourceUrl},
-          resolved_url = ${document.resolvedUrl},
-          title = ${document.title},
-          content_text = ${document.contentText},
-          content_hash = ${document.contentHash},
-          http_etag = ${document.httpEtag},
-          http_last_modified = ${document.httpLastModified},
-          scraped_at = ${document.scrapedAt},
-          updated_at = ${document.updatedAt}
-      where id = ${ScrapedDocumentId.value(document.id)}
-    """.update.run.map(_ > 0)
+      set reference_id = $uuid,
+          source_url = $text,
+          resolved_url = ${text.opt},
+          title = ${text.opt},
+          content_text = $text,
+          content_hash = $text,
+          http_etag = ${text.opt},
+          http_last_modified = ${text.opt},
+          scraped_at = $instant,
+          updated_at = $instant
+      where id = $uuid
+    """.command)(
+        (
+          ReferenceId.value(document.referenceId),
+          document.sourceUrl,
+          document.resolvedUrl,
+          document.title,
+          document.contentText,
+          document.contentHash,
+          document.httpEtag,
+          document.httpLastModified,
+          document.scrapedAt,
+          document.updatedAt,
+          ScrapedDocumentId.value(document.id)
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def delete(id: ScrapedDocumentId): ConnectionIO[Boolean] =
-    sql"""
+  override def delete(id: ScrapedDocumentId): IO[Boolean] =
+    session
+      .execute(sql"""
       delete from scraped_documents
-      where id = ${ScrapedDocumentId.value(id)}
-    """.update.run.map(_ > 0)
+      where id = $uuid
+    """.command)(ScrapedDocumentId.value(id))
+      .map(affectedRows)
+      .map(_ > 0)
 
-  private def select(where: Fragment): Query0[ScrapedDocument] =
-    (fr"""
+  private val select = sql"""
       select id, reference_id, source_url, resolved_url, title, content_text,
              content_hash, http_etag, http_last_modified, scraped_at, updated_at
       from scraped_documents
-    """ ++ where).query[ScrapedDocumentRow].map(scrapedDocument)
+    """
 }
 
-private object DoobieScrapeJobRepository extends ScrapeJobRepository[ConnectionIO] {
+private final class SkunkScrapeJobRepository(session: Session[IO]) extends ScrapeJobRepository[IO] {
   import RepositoryMapping.*
 
-  override def create(job: ScrapeJob): ConnectionIO[Unit] =
-    sql"""
+  override def create(job: ScrapeJob): IO[Unit] =
+    session
+      .execute(sql"""
       insert into scrape_jobs (
         id, reference_id, status, attempt_count, available_at, claimed_at,
         finished_at, last_error, created_at, updated_at
       ) values (
-        ${ScrapeJobId.value(job.id)},
-        ${ReferenceId.value(job.referenceId)},
-        ${job.status.databaseValue},
-        ${job.attemptCount},
-        ${job.availableAt},
-        ${job.claimedAt},
-        ${job.finishedAt},
-        ${job.lastError},
-        ${job.createdAt},
-        ${job.updatedAt}
+        $uuid,
+        $uuid,
+        $text,
+        $int4,
+        $instant,
+        ${instant.opt},
+        ${instant.opt},
+        ${text.opt},
+        $instant,
+        $instant
       )
-    """.update.run.void
+    """.command)(
+        (
+          ScrapeJobId.value(job.id),
+          ReferenceId.value(job.referenceId),
+          job.status.databaseValue,
+          job.attemptCount,
+          job.availableAt,
+          job.claimedAt,
+          job.finishedAt,
+          job.lastError,
+          job.createdAt,
+          job.updatedAt
+        )
+      )
+      .void
 
-  override def find(id: ScrapeJobId): ConnectionIO[Option[ScrapeJob]] =
-    select(fr"where id = ${ScrapeJobId.value(id)}").option
+  override def find(id: ScrapeJobId): IO[Option[ScrapeJob]] =
+    session
+      .option(sql"$select where id = $uuid".query(scrapeJobRowDecoder))(ScrapeJobId.value(id))
+      .map(_.map(scrapeJob))
 
   override def findLatestByReference(
       referenceId: ReferenceId
-  ): ConnectionIO[Option[ScrapeJob]] =
-    select(
-      fr"""
-        where reference_id = ${ReferenceId.value(referenceId)}
+  ): IO[Option[ScrapeJob]] =
+    session
+      .option(sql"""$select
+        where reference_id = $uuid
         order by created_at desc, id desc
         limit 1
-      """
-    ).option
+      """.query(scrapeJobRowDecoder))(ReferenceId.value(referenceId))
+      .map(_.map(scrapeJob))
 
-  override def claimNext(availableAt: Instant): ConnectionIO[Option[ScrapeJob]] =
-    sql"""
+  override def claimNext(availableAt: Instant): IO[Option[ScrapeJob]] =
+    session
+      .option(sql"""
       with candidate as (
         select pending.id
         from scrape_jobs pending
         where pending.status = 'pending'
-          and pending.available_at <= $availableAt
+          and pending.available_at <= $instant
           and not exists (
             select 1
             from scrape_jobs active
@@ -692,120 +840,179 @@ private object DoobieScrapeJobRepository extends ScrapeJobRepository[ConnectionI
       update scrape_jobs job
       set status = 'running',
           attempt_count = job.attempt_count + 1,
-          claimed_at = $availableAt,
+          claimed_at = $instant,
           finished_at = null,
           last_error = null,
-          updated_at = $availableAt
+          updated_at = $instant
       from candidate
       where job.id = candidate.id
       returning job.id, job.reference_id, job.status, job.attempt_count,
                 job.available_at, job.claimed_at, job.finished_at,
                 job.last_error, job.created_at, job.updated_at
-    """.query[ScrapeJobRow].map(scrapeJob).option
+    """.query(scrapeJobRowDecoder))((availableAt, availableAt, availableAt))
+      .map(_.map(scrapeJob))
 
   override def recoverStale(
       claimedBefore: Instant,
       recoveredAt: Instant,
       maximumAttempts: Int
-  ): ConnectionIO[Int] =
-    sql"""
+  ): IO[Int] =
+    session
+      .execute(sql"""
       update scrape_jobs
       set status =
-            case when attempt_count >= $maximumAttempts then 'failed'
+            case when attempt_count >= $int4 then 'failed'
                  else 'pending'
             end,
-          available_at = $recoveredAt,
+          available_at = $instant,
           claimed_at =
-            case when attempt_count >= $maximumAttempts then claimed_at
+            case when attempt_count >= $int4 then claimed_at
                  else null
             end,
           finished_at =
-            case when attempt_count >= $maximumAttempts then $recoveredAt
+            case when attempt_count >= $int4 then $instant
                  else null
             end,
           last_error = 'Recovered after the worker stopped before completing the job',
-          updated_at = $recoveredAt
+          updated_at = $instant
       where status = 'running'
-        and claimed_at < $claimedBefore
-    """.update.run
+        and claimed_at < $instant
+    """.command)(
+        (
+          maximumAttempts,
+          recoveredAt,
+          maximumAttempts,
+          maximumAttempts,
+          recoveredAt,
+          recoveredAt,
+          claimedBefore
+        )
+      )
+      .map(affectedRows)
 
-  override def update(job: ScrapeJob): ConnectionIO[Boolean] =
-    sql"""
+  override def update(job: ScrapeJob): IO[Boolean] =
+    session
+      .execute(sql"""
       update scrape_jobs
-      set reference_id = ${ReferenceId.value(job.referenceId)},
-          status = ${job.status.databaseValue},
-          attempt_count = ${job.attemptCount},
-          available_at = ${job.availableAt},
-          claimed_at = ${job.claimedAt},
-          finished_at = ${job.finishedAt},
-          last_error = ${job.lastError},
-          updated_at = ${job.updatedAt}
-      where id = ${ScrapeJobId.value(job.id)}
-    """.update.run.map(_ > 0)
+      set reference_id = $uuid,
+          status = $text,
+          attempt_count = $int4,
+          available_at = $instant,
+          claimed_at = ${instant.opt},
+          finished_at = ${instant.opt},
+          last_error = ${text.opt},
+          updated_at = $instant
+      where id = $uuid
+    """.command)(
+        (
+          ReferenceId.value(job.referenceId),
+          job.status.databaseValue,
+          job.attemptCount,
+          job.availableAt,
+          job.claimedAt,
+          job.finishedAt,
+          job.lastError,
+          job.updatedAt,
+          ScrapeJobId.value(job.id)
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
-  override def delete(id: ScrapeJobId): ConnectionIO[Boolean] =
-    sql"delete from scrape_jobs where id = ${ScrapeJobId.value(id)}".update.run
+  override def delete(id: ScrapeJobId): IO[Boolean] =
+    session
+      .execute(sql"delete from scrape_jobs where id = $uuid".command)(ScrapeJobId.value(id))
+      .map(affectedRows)
       .map(_ > 0)
 
   override def listByReference(
       referenceId: ReferenceId
-  ): ConnectionIO[List[ScrapeJob]] =
-    select(
-      fr"where reference_id = ${ReferenceId.value(referenceId)} order by created_at, id"
-    ).to[List]
+  ): IO[List[ScrapeJob]] =
+    session
+      .execute(
+        sql"$select where reference_id = $uuid order by created_at, id".query(scrapeJobRowDecoder)
+      )(ReferenceId.value(referenceId))
+      .map(_.map(scrapeJob))
 
-  private def select(where: Fragment): Query0[ScrapeJob] =
-    (fr"""
+  override def countsByStatus: IO[Map[String, Long]] =
+    session
+      .execute(sql"""
+        select status, count(*)
+        from scrape_jobs
+        group by status
+      """.query(text *: int8))
+      .map(_.toMap)
+
+  private val select = sql"""
       select id, reference_id, status, attempt_count, available_at, claimed_at,
              finished_at, last_error, created_at, updated_at
       from scrape_jobs
-    """ ++ where).query[ScrapeJobRow].map(scrapeJob)
+    """
 }
 
-private object DoobieRecipeSearchDocumentRepository
-    extends RecipeSearchDocumentRepository[ConnectionIO] {
-  override def create(document: RecipeSearchDocument): ConnectionIO[Unit] =
-    sql"""
+private final class SkunkRecipeSearchDocumentRepository(session: Session[IO])
+    extends RecipeSearchDocumentRepository[IO] {
+  override def create(document: RecipeSearchDocument): IO[Unit] =
+    session
+      .execute(sql"""
       insert into recipe_search_documents (
         recipe_id, plain_text, search_vector, updated_at
       ) values (
-        ${RecipeId.value(document.recipeId)},
-        ${document.plainText},
-        to_tsvector('english', ${document.plainText}),
-        ${document.updatedAt}
+        $uuid,
+        $text,
+        to_tsvector('english', $text),
+        $instant
       )
-    """.update.run.void
+    """.command)(
+        (
+          RecipeId.value(document.recipeId),
+          document.plainText,
+          document.plainText,
+          document.updatedAt
+        )
+      )
+      .void
 
   override def find(
       recipeId: RecipeId
-  ): ConnectionIO[Option[RecipeSearchDocument]] =
-    sql"""
+  ): IO[Option[RecipeSearchDocument]] =
+    session
+      .option(sql"""
       select recipe_id, plain_text, search_vector::text, updated_at
       from recipe_search_documents
-      where recipe_id = ${RecipeId.value(recipeId)}
-    """
-      .query[(UUID, String, String, Instant)]
-      .option
+      where recipe_id = $uuid
+    """.query(uuid *: text *: text *: instant))(RecipeId.value(recipeId))
       .map(
         _.map { case (id, plainText, searchVector, updatedAt) =>
           RecipeSearchDocument(RecipeId(id), plainText, searchVector, updatedAt)
         }
       )
 
-  override def update(document: RecipeSearchDocument): ConnectionIO[Boolean] =
-    sql"""
+  override def update(document: RecipeSearchDocument): IO[Boolean] =
+    session
+      .execute(sql"""
       update recipe_search_documents
-      set plain_text = ${document.plainText},
-          search_vector = to_tsvector('english', ${document.plainText}),
-          updated_at = ${document.updatedAt}
-      where recipe_id = ${RecipeId.value(document.recipeId)}
-    """.update.run.map(_ > 0)
+      set plain_text = $text,
+          search_vector = to_tsvector('english', $text),
+          updated_at = $instant
+      where recipe_id = $uuid
+    """.command)(
+        (
+          document.plainText,
+          document.plainText,
+          document.updatedAt,
+          RecipeId.value(document.recipeId)
+        )
+      )
+      .map(affectedRows)
+      .map(_ > 0)
 
   override def rebuildSearchDocument(
       recipeId: RecipeId,
       updatedAt: Instant
-  ): ConnectionIO[Unit] =
-    sql"""
+  ): IO[Unit] =
+    session
+      .execute(sql"""
       insert into recipe_search_documents (
         recipe_id, plain_text, search_vector, updated_at
       )
@@ -824,7 +1031,7 @@ private object DoobieRecipeSearchDocumentRepository
           setweight(to_tsvector('english', coalesce(keyword_values.keyword_text, '')), 'B') ||
           setweight(to_tsvector('english', concat_ws(E'\n', nullif(recipe.description, ''), reference_values.reference_text)), 'C') ||
           setweight(to_tsvector('english', concat_ws(E'\n', meals.meal_text, scraped.scraped_text)), 'D'),
-        $updatedAt
+        $instant
       from recipes recipe
       left join lateral (
         select string_agg(keyword.keyword, E'\n' order by lower(keyword.keyword), keyword.id)
@@ -857,67 +1064,75 @@ private object DoobieRecipeSearchDocumentRepository
         join scraped_documents document on document.reference_id = reference.id
         where reference.recipe_id = recipe.id
       ) scraped on true
-      where recipe.id = ${RecipeId.value(recipeId)}
+      where recipe.id = $uuid
       on conflict (recipe_id) do update
       set plain_text = excluded.plain_text,
           search_vector = excluded.search_vector,
           updated_at = excluded.updated_at
-    """.update.run.void
+    """.command)((updatedAt, RecipeId.value(recipeId)))
+      .void
 
-  override def search(query: String): ConnectionIO[List[RecipeSearchResult]] =
-    sql"""
+  override def search(query: String): IO[List[RecipeSearchResult]] =
+    session
+      .execute(sql"""
       with search_query as (
-        select websearch_to_tsquery('english', $query) as value
+        select websearch_to_tsquery('english', $text) as value
       )
       select recipe.id, recipe.title, recipe.description, recipe.primary_photo_id,
              recipe.created_at, recipe.updated_at, recipe.last_made_at,
              (
                ts_rank_cd(document.search_vector, search_query.value, 32) * 10.0 +
                greatest(
-                 similarity(recipe.title, $query),
-                 similarity(document.plain_text, $query) * 0.35
+                 similarity(recipe.title, $text),
+                 similarity(document.plain_text, $text) * 0.35
                )
-             ) as rank
+             )::float8 as rank
       from recipe_search_documents document
       join recipes recipe on recipe.id = document.recipe_id
       cross join search_query
       where document.search_vector @@ search_query.value
-         or similarity(recipe.title, $query) >= 0.18
+         or similarity(recipe.title, $text) >= 0.18
       order by rank desc, recipe.updated_at desc, recipe.id
-    """
-      .query[(RepositoryMapping.RecipeRow, Double)]
-      .to[List]
-      .map(_.map { case (recipe, rank) =>
-        RecipeSearchResult(RepositoryMapping.recipe(recipe), rank)
-      })
+    """.query((RepositoryMapping.recipeCodec ~ float8).map(RecipeSearchResult.apply.tupled)))(
+        (query, query, query, query)
+      )
 
-  override def delete(recipeId: RecipeId): ConnectionIO[Boolean] =
-    sql"""
+  override def delete(recipeId: RecipeId): IO[Boolean] =
+    session
+      .execute(sql"""
       delete from recipe_search_documents
-      where recipe_id = ${RecipeId.value(recipeId)}
-    """.update.run.map(_ > 0)
+      where recipe_id = $uuid
+    """.command)(RecipeId.value(recipeId))
+      .map(affectedRows)
+      .map(_ > 0)
 }
 
-private object DoobieRecipeKeywordRepository extends RecipeKeywordRepository[ConnectionIO] {
-  override def listByRecipe(recipeId: RecipeId): ConnectionIO[List[RecipeKeyword]] =
-    sql"""
+private final class SkunkRecipeKeywordRepository(session: Session[IO])
+    extends RecipeKeywordRepository[IO] {
+  override def listByRecipe(recipeId: RecipeId): IO[List[RecipeKeyword]] =
+    session
+      .execute(sql"""
       select id, recipe_id, keyword
       from recipe_keywords
-      where recipe_id = ${RecipeId.value(recipeId)}
+      where recipe_id = $uuid
       order by lower(keyword), id
-    """
-      .query[(UUID, UUID, String)]
-      .to[List]
+    """.query(uuid *: uuid *: text))(RecipeId.value(recipeId))
       .map(_.map { case (id, storedRecipeId, keyword) =>
         RecipeKeyword(id, RecipeId(storedRecipeId), keyword)
       })
 
-  override def replace(recipeId: RecipeId, keywords: List[String]): ConnectionIO[Unit] =
-    sql"delete from recipe_keywords where recipe_id = ${RecipeId.value(recipeId)}".update.run.void *>
+  override def replace(recipeId: RecipeId, keywords: List[String]): IO[Unit] =
+    session
+      .execute(sql"delete from recipe_keywords where recipe_id = $uuid".command)(
+        RecipeId.value(recipeId)
+      )
+      .void *>
       keywords.traverse_ { keyword =>
-        sql"""
+        session
+          .execute(sql"""
           insert into recipe_keywords (id, recipe_id, keyword)
-          values (${UUID.randomUUID()}, ${RecipeId.value(recipeId)}, $keyword)
-        """.update.run.void
+          values ($uuid, $uuid, $text)
+        """.command)((UUID.randomUUID(), RecipeId.value(recipeId), keyword))
+          .void
       }
 }

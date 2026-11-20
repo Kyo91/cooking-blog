@@ -1,21 +1,22 @@
 package cookingblog.service
 
+import cookingblog.database.Database
 import cats.effect.std.Random
 import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import cookingblog.config.ScrapeConfig
 import cookingblog.domain.*
-import cookingblog.repository.DoobieRepositories
+import cookingblog.repository.SkunkRepositories
 import cookingblog.scraping.{PageScraper, ScrapedPage, ScrapeWorker}
 import cookingblog.storage.{LocalPhotoStore, StorageKey}
-import doobie.*
-import doobie.implicits.*
 import cookingblog.testing.PostgresIntegrationSuite
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.noop.NoOpLogger
 
 import java.nio.file.Files
-import java.sql.{Connection, DriverManager}
+import skunk.Transaction
+import skunk.codec.all.text
+import skunk.implicits.*
 import java.time.Instant
 import java.util.UUID
 import scala.concurrent.duration.*
@@ -47,8 +48,8 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
         )
       ) *> (for {
         recipe <- ctx.api.getRecipe(ctx.id).flatMap(success)
-        keywords <- DoobieRepositories.keywords.listByRecipe(ctx.id).transact(ctx.xa)
-        search <- DoobieRepositories.searchDocuments.find(ctx.id).transact(ctx.xa)
+        keywords <- ctx.xa.use(_.keywords.listByRecipe(ctx.id))
+        search <- ctx.xa.use(_.searchDocuments.find(ctx.id))
       } yield {
         assert(recipe.title.startsWith("Renamed "))
         assertEquals(recipe.description, "new description")
@@ -126,10 +127,10 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
           )
         )
         savedMeal <- ctx.api.getMeal(ctx.id, meal.id).flatMap(success)
-        savedReference <- DoobieRepositories.references.find(reference.id).transact(ctx.xa)
+        savedReference <- ctx.xa.use(_.references.find(reference.id))
         recipe <- ctx.api.getRecipe(ctx.id).flatMap(success)
-        search <- DoobieRepositories.searchDocuments.find(ctx.id).transact(ctx.xa)
-        jobs <- DoobieRepositories.scrapeJobs.listByReference(reference.id).transact(ctx.xa)
+        search <- ctx.xa.use(_.searchDocuments.find(ctx.id))
+        jobs <- ctx.xa.use(_.scrapeJobs.listByReference(reference.id))
       } yield {
         assertEquals(savedMeal.notes, "saffron notes")
         assertEquals(savedMeal.cookedAt, later)
@@ -178,7 +179,7 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
           )
         )
         recipe <- ctx.api.getRecipe(ctx.id).flatMap(success)
-        search <- DoobieRepositories.searchDocuments.find(ctx.id).transact(ctx.xa)
+        search <- ctx.xa.use(_.searchDocuments.find(ctx.id))
       } yield {
         assertEquals(recipe.lastMadeAt, Some(later))
         assert(
@@ -199,19 +200,13 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
         photo <- createPhoto(ctx, meal.id)
         recipe <- ctx.api.getRecipe(ctx.id).flatMap(success)
         updatedAt = recipe.updatedAt.plusSeconds(1)
-        selected <- DoobieRepositories.recipes
-          .setPrimaryPhoto(ctx.id, photo.id, updatedAt)
-          .transact(ctx.xa)
-        updated <- DoobieRepositories.recipes
-          .updateDetails(ctx.id, recipe.title, "details only", updatedAt)
-          .transact(ctx.xa)
+        selected <- ctx.xa.use(_.recipes.setPrimaryPhoto(ctx.id, photo.id, updatedAt))
+        updated <- ctx.xa.use(
+          _.recipes.updateDetails(ctx.id, recipe.title, "details only", updatedAt)
+        )
         missingId = RecipeId.random
-        missingDetails <- DoobieRepositories.recipes
-          .updateDetails(missingId, "missing", "", cookedAt)
-          .transact(ctx.xa)
-        missingPrimary <- DoobieRepositories.recipes
-          .setPrimaryPhoto(missingId, photo.id, cookedAt)
-          .transact(ctx.xa)
+        missingDetails <- ctx.xa.use(_.recipes.updateDetails(missingId, "missing", "", cookedAt))
+        missingPrimary <- ctx.xa.use(_.recipes.setPrimaryPhoto(missingId, photo.id, cookedAt))
       } yield {
         assertEquals(selected.flatMap(_.primaryPhotoId), Some(photo.id))
         assertEquals(updated.flatMap(_.primaryPhotoId), Some(photo.id))
@@ -233,13 +228,10 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
             CreateReferenceInput("url", Some("https://example.com/concurrent-import"), None, None)
           )
           .flatMap(success)
-        job <- DoobieRepositories.scrapeJobs
-          .findLatestByReference(reference.id)
-          .transact(ctx.xa)
+        job <- ctx.xa
+          .use(_.scrapeJobs.findLatestByReference(reference.id))
           .flatMap(value => IO.fromOption(value)(AssertionError("Missing scrape job")))
-        _ <- DoobieRepositories.scrapeJobs
-          .update(job.copy(availableAt = Instant.EPOCH))
-          .transact(ctx.xa)
+        _ <- ctx.xa.use(_.scrapeJobs.update(job.copy(availableAt = Instant.EPOCH)))
         random <- Random.scalaUtilRandom[IO]
         scraper = new PageScraper {
           override def scrape(url: String): IO[ScrapedPage] = IO.pure(
@@ -247,7 +239,7 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
           )
         }
         worker = ScrapeWorker(ctx.xa, scrapeConfig, scraper, random)
-        _ <- locked(ctx.id).use { connection =>
+        _ <- locked(ctx.id).use { case (connection, _) =>
           worker.run.use { _ =>
             (waitForBlocked(1, ctx.xa) *>
               Resource
@@ -258,16 +250,20 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
                 )(_.cancel)
                 .use { edit =>
                   (waitForBlocked(2, ctx.xa) *>
-                    IO.blocking(connection.commit()) *>
+                    connection.commit *>
                     edit.joinWithNever.flatMap(success) *>
-                    waitForCompleted(job.id, ctx.xa)).guarantee(IO.blocking(connection.rollback()))
-                }).guarantee(IO.blocking(connection.rollback()))
+                    waitForCompleted(job.id, ctx.xa)).guaranteeCase {
+                    case cats.effect.Outcome.Succeeded(_) => IO.unit
+                    case _                                => connection.rollback.void.attempt.void
+                  }
+                }).guaranteeCase {
+              case cats.effect.Outcome.Succeeded(_) => IO.unit
+              case _                                => connection.rollback.void.attempt.void
+            }
           }
         }
-        search <- DoobieRepositories.searchDocuments.find(ctx.id).transact(ctx.xa)
-        document <- DoobieRepositories.scrapedDocuments
-          .findByReference(reference.id)
-          .transact(ctx.xa)
+        search <- ctx.xa.use(_.searchDocuments.find(ctx.id))
+        document <- ctx.xa.use(_.scrapedDocuments.findByReference(reference.id))
       } yield {
         assert(document.exists(_.contentText == "imported saffron instructions"))
         assert(
@@ -296,8 +292,8 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
     userAgent = "ConcurrencyTest/1"
   )
 
-  private def waitForCompleted(id: ScrapeJobId, xa: Transactor[IO]): IO[Unit] = {
-    def poll: IO[Unit] = DoobieRepositories.scrapeJobs.find(id).transact(xa).flatMap {
+  private def waitForCompleted(id: ScrapeJobId, xa: Database): IO[Unit] = {
+    def poll: IO[Unit] = xa.use(_.scrapeJobs.find(id)).flatMap {
       case Some(job) if job.status == ScrapeJobStatus.Succeeded => IO.unit
       case Some(job) if job.status == ScrapeJobStatus.Failed    =>
         IO.raiseError(AssertionError(s"Scrape failed: ${job.lastError}"))
@@ -314,7 +310,7 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
         reference <- ctx.api
           .createReference(ctx.id, CreateReferenceInput("book", None, Some("citation"), None))
           .flatMap(success)
-        results <- locked(ctx.id).use { connection =>
+        results <- locked(ctx.id).use { case (connection, repos) =>
           val writes = List(
             ctx.api
               .updateRecipe(ctx.id, UpdateRecipeInput(None, Some("deleted edit"), None))
@@ -334,11 +330,14 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
               .map(_.void),
             ctx.api.selectPrimaryPhoto(ctx.id, photo.id).map(_.void)
           )
-          execute(connection, "delete from recipes where id = ?", ctx.id) *>
+          repos.recipes.delete(ctx.id) *>
             writes.traverse(write => Resource.make(write.start)(_.cancel)).use { fibers =>
               (waitForBlocked(writes.size, ctx.xa) *>
-                IO.blocking(connection.commit()) *>
-                fibers.traverse(_.joinWithNever)).guarantee(IO.blocking(connection.rollback()))
+                connection.commit *>
+                fibers.traverse(_.joinWithNever)).guaranteeCase {
+                case cats.effect.Outcome.Succeeded(_) => IO.unit
+                case _                                => connection.rollback.void.attempt.void
+              }
             }
         }
       } yield {
@@ -357,7 +356,7 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
   }
 
   private final case class Context(
-      xa: Transactor[IO],
+      xa: Database,
       api: RecipeApiService,
       photoService: PhotoService,
       id: RecipeId
@@ -375,7 +374,7 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
       api
         .createRecipe(CreateRecipeInput(s"Concurrent ${UUID.randomUUID()}", None, None))
         .flatMap(success)
-    )(recipe => DoobieRepositories.recipes.delete(recipe.id).transact(xa).void)
+    )(recipe => xa.use(_.recipes.delete(recipe.id)).void)
   } yield Context(xa, api, photoService, recipe.id)
 
   private def createPhoto(ctx: Context, mealId: MealId): IO[Photo] = {
@@ -392,54 +391,37 @@ final class ConcurrentWritesIntegrationSuite extends PostgresIntegrationSuite {
       cookedAt,
       cookedAt
     )
-    DoobieRepositories.photos.create(photo).transact(ctx.xa).as(photo)
+    ctx.xa.use(_.photos.create(photo)).as(photo)
   }
 
   private def success[A](result: Either[ApiError, A]): IO[A] =
     IO.fromEither(result.leftMap(error => AssertionError(s"Unexpected API error: $error")))
 
   private def underLock[A](ctx: Context, writes: List[IO[Either[ApiError, A]]]): IO[Unit] =
-    locked(ctx.id).use { connection =>
+    locked(ctx.id).use { case (connection, _) =>
       writes.traverse(write => Resource.make(write.start)(_.cancel)).use { fibers =>
         (waitForBlocked(writes.size, ctx.xa) *>
-          IO.blocking(connection.commit()) *>
+          connection.commit *>
           fibers.traverse_(_.joinWithNever.flatMap(success)))
-          .guarantee(IO.blocking(connection.rollback()))
+          .guaranteeCase {
+            case cats.effect.Outcome.Succeeded(_) => IO.unit
+            case _                                => connection.rollback.void.attempt.void
+          }
       }
     }
 
-  private def locked(id: RecipeId): Resource[IO, Connection] =
-    Resource
-      .make(IO.blocking {
-        val config = databaseConfig
-        val connection = DriverManager.getConnection(config.url, config.user, config.password.value)
-        connection.setAutoCommit(false)
-        connection
-      })(connection =>
-        IO.blocking {
-          try { connection.rollback() }
-          finally { connection.close() }
-        }
-      )
-      .evalTap(connection =>
-        execute(connection, "select id from recipes where id = ? for update", id)
-      )
-
-  private def execute(connection: Connection, query: String, id: RecipeId): IO[Unit] =
-    IO.blocking {
-      val statement = connection.prepareStatement(query)
-      try {
-        statement.setObject(1, RecipeId.value(id))
-        val _ = statement.execute()
-      } finally { statement.close() }
+  private def locked(id: RecipeId): Resource[IO, (Transaction[IO], SkunkRepositories)] =
+    database.flatMap(_.session).flatMap { session =>
+      val repos = new SkunkRepositories(session)
+      session.transaction.evalTap(_ => repos.recipes.findForUpdate(id)).map(_ -> repos)
     }
 
-  private def waitForBlocked(count: Int, xa: Transactor[IO]): IO[Unit] = {
-    val blocked = sql"""
+  private def waitForBlocked(count: Int, xa: Database): IO[Unit] = {
+    val blocked = xa.session.use(_.execute(sql"""
       select query from pg_stat_activity
-      where datname = current_database() and application_name = $databaseApplicationName
+      where datname = current_database() and application_name = $text
         and wait_event_type = 'Lock'
-    """.query[String].to[List].transact(xa)
+    """.query(text))(databaseApplicationName))
     def poll: IO[Unit] = blocked.flatMap { queries =>
       if (queries.size == count) {
         IO {

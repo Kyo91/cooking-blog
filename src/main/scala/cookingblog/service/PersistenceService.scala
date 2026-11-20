@@ -1,11 +1,9 @@
 package cookingblog.service
 
+import cookingblog.database.Database
 import cats.effect.IO
 import cats.syntax.all.*
 import cookingblog.domain.*
-import cookingblog.repository.*
-import doobie.*
-import doobie.implicits.*
 
 import java.time.Instant
 
@@ -14,34 +12,31 @@ import java.time.Instant
   * Production HTTP writes generally enter through [[RecipeApiService]].
   */
 final class PersistenceService(
-    transactor: Transactor[IO],
-    recipes: RecipeRepository[ConnectionIO],
-    meals: MealRepository[ConnectionIO],
-    references: RecipeReferenceRepository[ConnectionIO],
-    scrapedDocuments: ScrapedDocumentRepository[ConnectionIO],
-    scrapeJobs: ScrapeJobRepository[ConnectionIO],
-    searchDocuments: RecipeSearchDocumentRepository[ConnectionIO]
+    pool: Database
 ) {
   def createRecipe(
       recipe: Recipe,
       searchDocument: RecipeSearchDocument
   ): IO[Unit] =
-    (recipes.create(recipe) *> searchDocuments.create(searchDocument))
-      .transact(transactor)
+    pool.transaction(repos =>
+      repos.recipes.create(recipe) *> repos.searchDocuments.create(searchDocument)
+    )
 
   def createMeal(meal: Meal): IO[Boolean] =
-    (meals.create(meal) *>
-      recipes.refreshLastMadeAt(meal.recipeId, meal.updatedAt))
-      .transact(transactor)
+    pool.transaction(repos =>
+      repos.meals.create(meal) *>
+        repos.recipes.refreshLastMadeAt(meal.recipeId, meal.updatedAt)
+    )
 
   /** Updates a meal and refreshes every affected recipe when a meal is ever moved. */
   def updateMeal(meal: Meal): IO[Boolean] = {
-    val program =
+    pool.transaction { repos =>
+      import repos.{recipes, meals}
       meals.find(meal.id).flatMap {
-        case None           => false.pure[ConnectionIO]
+        case None           => false.pure[IO]
         case Some(previous) =>
           meals.update(meal).flatMap {
-            case false => false.pure[ConnectionIO]
+            case false => false.pure[IO]
             case true  =>
               val affectedRecipeIds =
                 List(previous.recipeId, meal.recipeId).distinct
@@ -50,38 +45,38 @@ final class PersistenceService(
                 .map(_.forall(identity))
           }
       }
-
-    program.transact(transactor)
+    }
   }
 
   /** Deletes a meal only after locating its recipe so the cached last-made value can be recomputed.
     */
   def deleteMeal(id: MealId, updatedAt: Instant): IO[Boolean] = {
-    val program =
+    pool.transaction { repos =>
+      import repos.{recipes, meals}
       meals.find(id).flatMap {
-        case None       => false.pure[ConnectionIO]
+        case None       => false.pure[IO]
         case Some(meal) =>
           meals.delete(id).flatMap {
-            case false => false.pure[ConnectionIO]
+            case false => false.pure[IO]
             case true  => recipes.refreshLastMadeAt(meal.recipeId, updatedAt)
           }
       }
-
-    program.transact(transactor)
+    }
   }
 
   def createReferenceAndJob(
       reference: RecipeReference,
       job: ScrapeJob
   ): IO[Unit] =
-    (references.create(reference) *> scrapeJobs.create(job)).transact(transactor)
+    pool.transaction(repos => repos.references.create(reference) *> repos.scrapeJobs.create(job))
 
   /** Upserts imported text and its search document together, preventing stale search content. */
   def saveScrapedDocumentAndSearch(
       document: ScrapedDocument,
       searchDocument: RecipeSearchDocument
   ): IO[Unit] = {
-    val program =
+    pool.transaction { repos =>
+      import repos.{scrapedDocuments, searchDocuments}
       scrapedDocuments.findByReference(document.referenceId).flatMap {
         case None           => scrapedDocuments.create(document)
         case Some(existing) =>
@@ -90,20 +85,13 @@ final class PersistenceService(
         case None    => searchDocuments.create(searchDocument)
         case Some(_) => searchDocuments.update(searchDocument).void
       }
-
-    program.transact(transactor)
+    }
   }
 }
 
 object PersistenceService {
-  def apply(transactor: Transactor[IO]): PersistenceService =
+  def apply(pool: Database): PersistenceService =
     new PersistenceService(
-      transactor,
-      DoobieRepositories.recipes,
-      DoobieRepositories.meals,
-      DoobieRepositories.references,
-      DoobieRepositories.scrapedDocuments,
-      DoobieRepositories.scrapeJobs,
-      DoobieRepositories.searchDocuments
+      pool
     )
 }
