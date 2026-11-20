@@ -5,7 +5,7 @@ import cookingblog.domain.*
 import cookingblog.storage.StorageKey
 import cats.effect.IO
 import cookingblog.database.Database.{affectedRows, instant}
-import skunk.{Decoder, Session}
+import skunk.{Codec, Decoder, Session}
 import skunk.codec.all.*
 import skunk.implicits.*
 
@@ -91,6 +91,7 @@ trait ScrapeJobRepository[F[_]] {
   def update(job: ScrapeJob): F[Boolean]
   def delete(id: ScrapeJobId): F[Boolean]
   def listByReference(referenceId: ReferenceId): F[List[ScrapeJob]]
+  def countsByStatus: F[Map[String, Long]]
 }
 
 /** Maintains and queries the denormalized PostgreSQL full-text search projection. */
@@ -124,25 +125,6 @@ final class SkunkRepositories(session: Session[IO]) {
 }
 
 private object RepositoryMapping {
-  final case class RecipeRow(
-      id: UUID,
-      title: String,
-      description: String,
-      primaryPhotoId: Option[UUID],
-      createdAt: Instant,
-      updatedAt: Instant,
-      lastMadeAt: Option[Instant]
-  )
-
-  final case class MealRow(
-      id: UUID,
-      recipeId: UUID,
-      notes: String,
-      cookedAt: Instant,
-      createdAt: Instant,
-      updatedAt: Instant
-  )
-
   final case class PhotoRow(
       id: UUID,
       mealId: UUID,
@@ -195,11 +177,16 @@ private object RepositoryMapping {
       updatedAt: Instant
   )
 
-  val recipeRowDecoder: Decoder[RecipeRow] =
-    (uuid *: text *: text *: uuid.opt *: instant *: instant *: instant.opt).to[RecipeRow]
+  val recipeIdCodec: Codec[RecipeId] = uuid.imap(RecipeId.apply)(RecipeId.value)
+  val mealIdCodec: Codec[MealId] = uuid.imap(MealId.apply)(MealId.value)
+  val photoIdCodec: Codec[PhotoId] = uuid.imap(PhotoId.apply)(PhotoId.value)
 
-  val mealRowDecoder: Decoder[MealRow] =
-    (uuid *: uuid *: text *: instant *: instant *: instant).to[MealRow]
+  val recipeCodec: Codec[Recipe] =
+    (recipeIdCodec *: text *: text *: photoIdCodec.opt *: instant *: instant *: instant.opt)
+      .to[Recipe]
+
+  val mealCodec: Codec[Meal] =
+    (mealIdCodec *: recipeIdCodec *: text *: instant *: instant *: instant).to[Meal]
 
   val photoRowDecoder: Decoder[PhotoRow] =
     (uuid *: uuid *: text *: text *: text *: int8 *: int4.opt *: int4.opt *: text.opt *: instant *: instant)
@@ -216,27 +203,6 @@ private object RepositoryMapping {
   val scrapeJobRowDecoder: Decoder[ScrapeJobRow] =
     (uuid *: uuid *: text *: int4 *: instant *: instant.opt *: instant.opt *: text.opt *: instant *: instant)
       .to[ScrapeJobRow]
-
-  def recipe(row: RecipeRow): Recipe =
-    Recipe(
-      RecipeId(row.id),
-      row.title,
-      row.description,
-      row.primaryPhotoId.map(PhotoId(_)),
-      row.createdAt,
-      row.updatedAt,
-      row.lastMadeAt
-    )
-
-  def meal(row: MealRow): Meal =
-    Meal(
-      MealId(row.id),
-      RecipeId(row.recipeId),
-      row.notes,
-      row.cookedAt,
-      row.createdAt,
-      row.updatedAt
-    )
 
   def photo(row: PhotoRow): Either[IllegalStateException, Photo] =
     StorageKey
@@ -316,51 +282,32 @@ private object RepositoryMapping {
 private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRepository[IO] {
   import RepositoryMapping.*
 
+  private val columns =
+    sql"id, title, description, primary_photo_id, created_at, updated_at, last_made_at"
+
   override def create(recipe: Recipe): IO[Unit] =
     session
       .execute(sql"""
-      insert into recipes (
-        id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-      ) values (
-        $uuid,
-        $text,
-        $text,
-        ${uuid.opt},
-        $instant,
-        $instant,
-        ${instant.opt}
-      )
-    """.command)(
-        (
-          RecipeId.value(recipe.id),
-          recipe.title,
-          recipe.description,
-          recipe.primaryPhotoId.map(PhotoId.value),
-          recipe.createdAt,
-          recipe.updatedAt,
-          recipe.lastMadeAt
-        )
-      )
+      insert into recipes ($columns) values ($recipeCodec)
+    """.command)(recipe)
       .void
 
   override def find(id: RecipeId): IO[Option[Recipe]] =
     session
       .option(sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+      select $columns
       from recipes
-      where id = $uuid
-    """.query(recipeRowDecoder))(RecipeId.value(id))
-      .map(_.map(recipe))
+      where id = $recipeIdCodec
+    """.query(recipeCodec))(id)
 
   override def findForUpdate(id: RecipeId): IO[Option[Recipe]] =
     session
       .option(sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+      select $columns
       from recipes
-      where id = $uuid
+      where id = $recipeIdCodec
       for update
-    """.query(recipeRowDecoder))(RecipeId.value(id))
-      .map(_.map(recipe))
+    """.query(recipeCodec))(id)
 
   override def updateDetails(
       id: RecipeId,
@@ -372,10 +319,9 @@ private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRe
       .option(sql"""
       update recipes
       set title = $text, description = $text, updated_at = $instant
-      where id = $uuid
-      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-    """.query(recipeRowDecoder))((title, description, updatedAt, RecipeId.value(id)))
-      .map(_.map(recipe))
+      where id = $recipeIdCodec
+      returning $columns
+    """.query(recipeCodec))((title, description, updatedAt, id))
 
   override def setPrimaryPhoto(
       id: RecipeId,
@@ -385,26 +331,24 @@ private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRe
     session
       .option(sql"""
       update recipes
-      set primary_photo_id = $uuid, updated_at = $instant
-      where id = $uuid
-      returning id, title, description, primary_photo_id, created_at, updated_at, last_made_at
-    """.query(recipeRowDecoder))((PhotoId.value(photoId), updatedAt, RecipeId.value(id)))
-      .map(_.map(recipe))
+      set primary_photo_id = $photoIdCodec, updated_at = $instant
+      where id = $recipeIdCodec
+      returning $columns
+    """.query(recipeCodec))((photoId, updatedAt, id))
 
   override def delete(id: RecipeId): IO[Boolean] =
     session
-      .execute(sql"delete from recipes where id = $uuid".command)(RecipeId.value(id))
+      .execute(sql"delete from recipes where id = $recipeIdCodec".command)(id)
       .map(affectedRows)
       .map(_ > 0)
 
   override def list: IO[List[Recipe]] =
     session
       .execute(sql"""
-      select id, title, description, primary_photo_id, created_at, updated_at, last_made_at
+      select $columns
       from recipes
       order by coalesce(last_made_at, updated_at) desc, id
-    """.query(recipeRowDecoder))
-      .map(_.map(recipe))
+    """.query(recipeCodec))
 
   override def refreshLastMadeAt(
       id: RecipeId,
@@ -416,11 +360,11 @@ private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRe
       set last_made_at = (
             select max(cooked_at)
             from meals
-            where recipe_id = $uuid
+            where recipe_id = $recipeIdCodec
           ),
           updated_at = $instant
-      where id = $uuid
-    """.command)((RecipeId.value(id), updatedAt, RecipeId.value(id)))
+      where id = $recipeIdCodec
+    """.command)((id, updatedAt, id))
       .map(affectedRows)
       .map(_ > 0)
 }
@@ -428,55 +372,39 @@ private final class SkunkRecipeRepository(session: Session[IO]) extends RecipeRe
 private final class SkunkMealRepository(session: Session[IO]) extends MealRepository[IO] {
   import RepositoryMapping.*
 
+  private val columns = sql"id, recipe_id, notes, cooked_at, created_at, updated_at"
+
   override def create(meal: Meal): IO[Unit] =
     session
       .execute(sql"""
-      insert into meals (id, recipe_id, notes, cooked_at, created_at, updated_at)
-      values (
-        $uuid,
-        $uuid,
-        $text,
-        $instant,
-        $instant,
-        $instant
-      )
-    """.command)(
-        (
-          MealId.value(meal.id),
-          RecipeId.value(meal.recipeId),
-          meal.notes,
-          meal.cookedAt,
-          meal.createdAt,
-          meal.updatedAt
-        )
-      )
+      insert into meals ($columns) values ($mealCodec)
+    """.command)(meal)
       .void
 
   override def find(id: MealId): IO[Option[Meal]] =
     session
       .option(sql"""
-      select id, recipe_id, notes, cooked_at, created_at, updated_at
+      select $columns
       from meals
-      where id = $uuid
-    """.query(mealRowDecoder))(MealId.value(id))
-      .map(_.map(meal))
+      where id = $mealIdCodec
+    """.query(mealCodec))(id)
 
   override def update(meal: Meal): IO[Boolean] =
     session
       .execute(sql"""
       update meals
-      set recipe_id = $uuid,
+      set recipe_id = $recipeIdCodec,
           notes = $text,
           cooked_at = $instant,
           updated_at = $instant
-      where id = $uuid
+      where id = $mealIdCodec
     """.command)(
         (
-          RecipeId.value(meal.recipeId),
+          meal.recipeId,
           meal.notes,
           meal.cookedAt,
           meal.updatedAt,
-          MealId.value(meal.id)
+          meal.id
         )
       )
       .map(affectedRows)
@@ -484,19 +412,18 @@ private final class SkunkMealRepository(session: Session[IO]) extends MealReposi
 
   override def delete(id: MealId): IO[Boolean] =
     session
-      .execute(sql"delete from meals where id = $uuid".command)(MealId.value(id))
+      .execute(sql"delete from meals where id = $mealIdCodec".command)(id)
       .map(affectedRows)
       .map(_ > 0)
 
   override def listByRecipe(recipeId: RecipeId): IO[List[Meal]] =
     session
       .execute(sql"""
-      select id, recipe_id, notes, cooked_at, created_at, updated_at
+      select $columns
       from meals
-      where recipe_id = $uuid
+      where recipe_id = $recipeIdCodec
       order by cooked_at desc, id
-    """.query(mealRowDecoder))(RecipeId.value(recipeId))
-      .map(_.map(meal))
+    """.query(mealCodec))(recipeId)
 }
 
 private final class SkunkPhotoRepository(session: Session[IO]) extends PhotoRepository[IO] {
@@ -1007,6 +934,15 @@ private final class SkunkScrapeJobRepository(session: Session[IO]) extends Scrap
       )(ReferenceId.value(referenceId))
       .map(_.map(scrapeJob))
 
+  override def countsByStatus: IO[Map[String, Long]] =
+    session
+      .execute(sql"""
+        select status, count(*)
+        from scrape_jobs
+        group by status
+      """.query(text *: int8))
+      .map(_.toMap)
+
   private val select = sql"""
       select id, reference_id, status, attempt_count, available_at, claimed_at,
              finished_at, last_error, created_at, updated_at
@@ -1157,10 +1093,9 @@ private final class SkunkRecipeSearchDocumentRepository(session: Session[IO])
       where document.search_vector @@ search_query.value
          or similarity(recipe.title, $text) >= 0.18
       order by rank desc, recipe.updated_at desc, recipe.id
-    """.query(RepositoryMapping.recipeRowDecoder ~ float8))((query, query, query, query))
-      .map(_.map { case (recipe, rank) =>
-        RecipeSearchResult(RepositoryMapping.recipe(recipe), rank)
-      })
+    """.query((RepositoryMapping.recipeCodec ~ float8).map(RecipeSearchResult.apply.tupled)))(
+        (query, query, query, query)
+      )
 
   override def delete(recipeId: RecipeId): IO[Boolean] =
     session

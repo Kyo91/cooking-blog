@@ -19,77 +19,34 @@ trait SessionStore[F[_]] {
 }
 
 final class SkunkSessionStore(pool: Database) extends SessionStore[IO] {
+  private val principalCodec = text.imap(Principal.apply)(_.name)
+  private val sessionCodec =
+    (text *: principalCodec *: text *: instant *: instant *: instant.opt).to[SessionRecord]
+  private val columns =
+    sql"token_hash, principal, csrf_secret_hash, created_at, expires_at, invalidated_at"
+
   override def create(session: SessionRecord): IO[Unit] =
-    pool.session
-      .use(
-        _.execute(sql"""
-      insert into auth_sessions (
-        token_hash,
-        principal,
-        csrf_secret_hash,
-        created_at,
-        expires_at,
-        invalidated_at
-      ) values (
-        $text,
-        $text,
-        $text,
-        $instant,
-        $instant,
-        ${instant.opt}
-      )
-    """.command)(
-          (
-            session.tokenHash,
-            session.principal.name,
-            session.csrfSecretHash,
-            session.createdAt,
-            session.expiresAt,
-            session.invalidatedAt
-          )
-        )
-      )
+    pool
+      .withSession(_.execute(sql"""
+      insert into auth_sessions ($columns) values ($sessionCodec)
+    """.command)(session))
       .void
 
   override def findActive(
       tokenHash: String,
       now: Instant
   ): IO[Option[SessionRecord]] =
-    pool.session
-      .use(
-        _.option(
-          sql"""
-      select
-        token_hash,
-        principal,
-        csrf_secret_hash,
-        created_at,
-        expires_at,
-        invalidated_at
+    pool.withSession(_.option(sql"""
+      select $columns
       from auth_sessions
       where token_hash = $text
         and invalidated_at is null
         and expires_at > $instant
-    """
-            .query(text *: text *: text *: instant *: instant *: instant.opt)
-        )((tokenHash, now))
-      )
-      .map(
-        _.map { case (hash, principal, csrfHash, createdAt, expiresAt, invalidatedAt) =>
-          SessionRecord(
-            hash,
-            Principal(principal),
-            csrfHash,
-            createdAt,
-            expiresAt,
-            invalidatedAt
-          )
-        }
-      )
+    """.query(sessionCodec))((tokenHash, now)))
 
   override def invalidate(tokenHash: String, now: Instant): IO[Unit] =
-    pool.session
-      .use(_.execute(sql"""
+    pool
+      .withSession(_.execute(sql"""
       update auth_sessions
       set invalidated_at = $instant
       where token_hash = $text
@@ -98,8 +55,8 @@ final class SkunkSessionStore(pool: Database) extends SessionStore[IO] {
       .void
 
   override def deleteExpiredOrInvalidated(now: Instant): IO[Int] =
-    pool.session
-      .use(_.execute(sql"""
+    pool
+      .withSession(_.execute(sql"""
       delete from auth_sessions
       where expires_at <= $instant
         or invalidated_at is not null

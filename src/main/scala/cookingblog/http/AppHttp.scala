@@ -41,7 +41,7 @@ final class AppHttp(
       scrapingEnabled
     )
   private val healthRoutes = HealthRoutes(pool, photoService)
-  private val metricsRoutes = MetricsRoutes(pool, metrics)
+  private val metricsRoutes = MetricsRoutes(pool.use(_.scrapeJobs.countsByStatus), metrics)
   private val staticRoutes = StaticRoutes(getClass.getClassLoader)
 
   def cleanupOrphanPhotos: IO[Int] = photoService.cleanupOrphans

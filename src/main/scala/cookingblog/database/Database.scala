@@ -16,11 +16,14 @@ import java.time.{Instant, ZoneOffset}
 import java.util.Properties
 import scala.concurrent.duration.*
 
-final class Database private (val session: Resource[IO, Session[IO]]) {
-  def ping: IO[Unit] = session.use(_.unique(sql"select 1".query(int4))).void
+final class Database private (private[cookingblog] val session: Resource[IO, Session[IO]]) {
+  private[cookingblog] def withSession[A](use: Session[IO] => IO[A]): IO[A] =
+    session.use(use)
+
+  def ping: IO[Unit] = withSession(_.unique(sql"select 1".query(int4))).void
 
   def use[A](use: SkunkRepositories => IO[A]): IO[A] =
-    session.use(connection => use(new SkunkRepositories(connection)))
+    withSession(connection => use(new SkunkRepositories(connection)))
 
   def transaction[A](use: SkunkRepositories => IO[A]): IO[A] =
     session.use { connection =>
@@ -52,25 +55,32 @@ object Database {
     }.void
 
   def pooled(config: DatabaseConfig): Resource[IO, Database] =
-    Resource.eval(IO(connectionSettings(config.url))).flatMap {
-      case (host, port, name, ssl, params) =>
-        Session
-          .Builder[IO]
-          .withHost(host)
-          .withPort(port)
-          .withUserAndPassword(config.user, config.password.value)
-          .withDatabase(name)
-          .withConnectionParameters(params)
-          .withSSL(ssl)
-          .withRedactionStrategy(RedactionStrategy.All)
-          .withReadTimeout(30.seconds)
-          .pooled(config.poolSize)
-          .map(new Database(_))
-          .evalTap(_.ping)
+    Resource.eval(IO(connectionSettings(config.url))).flatMap { settings =>
+      Session
+        .Builder[IO]
+        .withHost(settings.host)
+        .withPort(settings.port)
+        .withUserAndPassword(config.user, config.password.value)
+        .withDatabase(settings.database)
+        .withConnectionParameters(settings.parameters)
+        .withSSL(settings.ssl)
+        .withRedactionStrategy(RedactionStrategy.All)
+        .withReadTimeout(30.seconds)
+        .pooled(config.poolSize)
+        .map(new Database(_))
+        .evalTap(_.ping)
     }
 
+  private final case class ConnectionSettings(
+      host: String,
+      port: Int,
+      database: String,
+      ssl: SSL,
+      parameters: Map[String, String]
+  )
+
   // Parse the same JDBC URL used by Flyway, but JDBC never opens a session for application queries.
-  private def connectionSettings(url: String): (String, Int, String, SSL, Map[String, String]) = {
+  private def connectionSettings(url: String): ConnectionSettings = {
     val props = Option(Driver.parseURL(url, new Properties()))
       .getOrElse(throw IllegalArgumentException("DATABASE_URL must be a PostgreSQL JDBC URL"))
     require(
@@ -102,6 +112,6 @@ object Database {
     val params = Session.DefaultConnectionParameters ++
       Option(PGProperty.APPLICATION_NAME.getOrDefault(props)).map("application_name" -> _) ++
       Option(PGProperty.CURRENT_SCHEMA.getOrDefault(props)).map("search_path" -> _)
-    (host, port.toInt, database, tls, params)
+    ConnectionSettings(host, port.toInt, database, tls, params)
   }
 }

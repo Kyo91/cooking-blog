@@ -213,13 +213,11 @@ final class RecipeApiService(
             timestamp
           )
         pool.transaction { repos =>
-          import repos.{recipes, meals, searchDocuments}
+          import repos.{recipes, meals}
           recipes.findForUpdate(recipeId).flatMap {
             case None    => NotFound("recipe").asLeft[Meal].pure[IO]
             case Some(_) =>
-              (meals.create(meal) *>
-                recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
-                searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+              (meals.create(meal) *> refreshMealProjections(repos, recipeId, timestamp))
                 .as(meal.asRight[ApiError])
           }
         }
@@ -260,7 +258,7 @@ final class RecipeApiService(
       continue(validatedNotes) { notes =>
         now.flatMap { timestamp =>
           transactWrite(recipeId) { repos =>
-            import repos.{recipes, meals, searchDocuments}
+            import repos.meals
             meals.find(mealId).flatMap {
               case None => NotFound("meal").asLeft[Meal].pure[IO]
               case Some(existing) if existing.recipeId != recipeId =>
@@ -277,8 +275,7 @@ final class RecipeApiService(
                 meals.update(updated).flatMap {
                   case false => NotFound("meal").asLeft[Meal].pure[IO]
                   case true  =>
-                    (recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
-                      searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                    refreshMealProjections(repos, recipeId, timestamp)
                       .as(updated.asRight[ApiError])
                 }
             }
@@ -294,7 +291,7 @@ final class RecipeApiService(
   ): IO[Either[ApiError, Unit]] =
     now.flatMap { timestamp =>
       transactWrite(recipeId) { repos =>
-        import repos.{recipes, meals, photos, searchDocuments}
+        import repos.{meals, photos}
         meals.find(mealId).flatMap {
           case None =>
             NotFound("meal").asLeft[List[StorageKey]].pure[IO]
@@ -307,8 +304,7 @@ final class RecipeApiService(
               meals.delete(mealId).flatMap {
                 case false => NotFound("meal").asLeft[List[StorageKey]].pure[IO]
                 case true  =>
-                  (recipes.refreshLastMadeAt(recipeId, timestamp).flatMap(requireRecipe) *>
-                    searchDocuments.rebuildSearchDocument(recipeId, timestamp))
+                  refreshMealProjections(repos, recipeId, timestamp)
                     .as(storedPhotos.map(_.storageKey).asRight[ApiError])
               }
             }
@@ -787,11 +783,15 @@ final class RecipeApiService(
   private def transactWrite[A](recipeId: RecipeId)(use: SkunkRepositories => IO[A]): IO[A] =
     pool.transaction(repos => repos.recipes.findForUpdate(recipeId) *> IO.defer(use(repos)))
 
-  private def requireRecipe(updated: Boolean): IO[Unit] =
-    if (updated) ().pure[IO]
-    else
-      IllegalStateException("Locked recipe disappeared during a write")
-        .raiseError[IO, Unit]
+  private def refreshMealProjections(
+      repos: SkunkRepositories,
+      recipeId: RecipeId,
+      timestamp: Instant
+  ): IO[Unit] =
+    repos.recipes.refreshLastMadeAt(recipeId, timestamp).flatMap {
+      case true  => repos.searchDocuments.rebuildSearchDocument(recipeId, timestamp)
+      case false => IO.raiseError(IllegalStateException("Locked recipe disappeared during a write"))
+    }
 
   private def now: IO[Instant] = Clock[IO].realTimeInstant
 
