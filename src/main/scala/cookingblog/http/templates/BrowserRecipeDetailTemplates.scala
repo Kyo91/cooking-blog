@@ -1,13 +1,11 @@
 package cookingblog.http.templates
 
+import cookingblog.database.Database
 import cats.effect.IO
 import cats.syntax.all.*
 import cookingblog.domain.*
 import cookingblog.http.pages.{BrowserRecipe, BrowserReference}
-import cookingblog.repository.DoobieRepositories
 import cookingblog.service.RecipeApiService
-import doobie.Transactor
-import doobie.implicits.*
 import org.http4s.*
 import org.http4s.dsl.io.*
 import org.http4s.headers.`Content-Type`
@@ -19,7 +17,7 @@ import scalatags.Text.tags2.{article, details, main, section, summary as details
 
 private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormTemplates {
   protected def recipeService: RecipeApiService
-  protected def transactor: Transactor[IO]
+  protected def pool: Database
   protected def scrapingEnabled: Boolean
 
   protected def recipeEditPage(id: RecipeId, csrfToken: String): IO[Response[IO]] =
@@ -45,9 +43,9 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
       case Some(detail) => Ok(detailPage(detail, csrfToken), `Content-Type`(MediaType.text.html))
     }
 
-  private def recipeDetail(id: RecipeId): IO[Option[BrowserRecipe]] = {
-    import DoobieRepositories.*
-    (for {
+  private def recipeDetail(id: RecipeId): IO[Option[BrowserRecipe]] = pool.transaction { repos =>
+    import repos.*
+    for {
       recipe <- recipes.find(id)
       result <- recipe.traverse { value =>
         (
@@ -68,14 +66,14 @@ private[templates] trait BrowserRecipeDetailTemplates extends BrowserRecipeFormT
             )
         }
       }
-    } yield result).transact(transactor)
+    } yield result
   }
 
   private def recipeKeywords(id: RecipeId): IO[List[String]] =
-    DoobieRepositories.keywords.listByRecipe(id).map(_.map(_.keyword)).transact(transactor)
+    pool.use(_.keywords.listByRecipe(id)).map(_.map(_.keyword))
 
   private def recipeReferences(id: RecipeId): IO[List[RecipeReference]] =
-    DoobieRepositories.references.listByRecipe(id).transact(transactor)
+    pool.use(_.references.listByRecipe(id))
 
   private def detailPage(detail: BrowserRecipe, csrfToken: String): String = {
     val recipe = detail.recipe

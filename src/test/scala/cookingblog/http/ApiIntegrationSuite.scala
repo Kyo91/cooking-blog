@@ -464,21 +464,21 @@ final class ApiIntegrationSuite extends PostgresIntegrationSuite {
       scrapingEnabled: Boolean
   ): Resource[IO, HttpApp[IO]] =
     for {
-      transactor <- database
-      store = DoobieSessionStore(transactor)
+      pool <- database
+      store = SkunkSessionStore(pool)
       random <- Resource.eval(IO.blocking(SecureRandom()))
       manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
       cleanup = PhotoCleanup(photoStore)
-      photoService = PhotoService(transactor, photoStore, cleanup)
-      recipeService = RecipeApiService(transactor, cleanup)
+      photoService = PhotoService(pool, photoStore, cleanup)
+      recipeService = RecipeApiService(pool, cleanup)
       http =
         AppHttp(
           credentials,
           manager,
-          transactor,
+          pool,
           authConfig,
           photoService,
           recipeService,

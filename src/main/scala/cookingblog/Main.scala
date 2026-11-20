@@ -34,8 +34,8 @@ object Main extends IOApp.Simple {
         )
       )
       _ <- Resource.eval(Database.migrate(config.database))
-      transactor <- Database.transactor(config.database)
-      sessionStore = DoobieSessionStore(transactor)
+      pool <- Database.pooled(config.database)
+      sessionStore = SkunkSessionStore(pool)
       secureRandom <- Resource.eval(IO.blocking(SecureRandom()))
       sessionManager =
         SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom)
@@ -43,14 +43,14 @@ object Main extends IOApp.Simple {
       metrics <- Resource.eval(OperationalMetrics.create)
       photoStore <- PhotoStore.create(config.photos)
       photoCleanup = PhotoCleanup(photoStore)
-      photoService = PhotoService(transactor, photoStore, photoCleanup, metrics)
-      recipeService = RecipeApiService(transactor, photoCleanup)
-      _ <- Scraping.resources(config.scraping, transactor, metrics)
+      photoService = PhotoService(pool, photoStore, photoCleanup, metrics)
+      recipeService = RecipeApiService(pool, photoCleanup)
+      _ <- Scraping.resources(config.scraping, pool, metrics)
       http =
         AppHttp(
           credentialsAuthenticator,
           sessionManager,
-          transactor,
+          pool,
           config.auth,
           photoService,
           recipeService,

@@ -1,5 +1,6 @@
 package cookingblog.service
 
+import cookingblog.database.Database
 import cats.effect.{Clock, IO}
 import cats.syntax.all.*
 import cookingblog.domain.*
@@ -7,8 +8,6 @@ import cookingblog.observability.OperationalMetrics
 import cookingblog.repository.*
 import cookingblog.service.ApiError.*
 import cookingblog.storage.*
-import doobie.*
-import doobie.implicits.*
 import fs2.Stream
 
 import java.nio.file.Paths
@@ -27,12 +26,9 @@ final case class PhotoMedia(
   * cannot complete.
   */
 final class PhotoService(
-    transactor: Transactor[IO],
+    pool: Database,
     photoStore: PhotoStore,
     imageProcessor: ImageProcessor,
-    recipes: RecipeRepository[ConnectionIO],
-    meals: MealRepository[ConnectionIO],
-    photos: PhotoRepository[ConnectionIO],
     photoCleanup: PhotoCleanup[IO],
     metrics: OperationalMetrics
 ) {
@@ -106,15 +102,16 @@ final class PhotoService(
       case Left(error)    => IO.pure(Left(error))
       case Right(comment) =>
         now.flatMap { timestamp =>
-          val program =
-            findRelated(recipeId, mealId, photoId).flatMap {
-              case Left(error)     => error.asLeft[Photo].pure[ConnectionIO]
+          transactWrite(recipeId) { repos =>
+            import repos.photos
+            findRelated(repos, recipeId, mealId, photoId).flatMap {
+              case Left(error)     => error.asLeft[Photo].pure[IO]
               case Right(existing) =>
                 val updated =
                   existing.copy(comment = comment, updatedAt = timestamp)
                 photos.update(updated).map(Either.cond(_, updated, NotFound("photo")))
             }
-          transactWrite(recipeId)(program)
+          }
         }
     }
 
@@ -126,15 +123,16 @@ final class PhotoService(
       mealId: MealId,
       photoId: PhotoId
   ): IO[Either[ApiError, Unit]] = {
-    val program =
-      findRelated(recipeId, mealId, photoId).flatMap {
-        case Left(error)  => error.asLeft[(StorageKey, Unit)].pure[ConnectionIO]
+    transactWrite(recipeId) { repos =>
+      import repos.photos
+      findRelated(repos, recipeId, mealId, photoId).flatMap {
+        case Left(error)  => error.asLeft[(StorageKey, Unit)].pure[IO]
         case Right(photo) =>
           photos
             .delete(photo.id)
             .map(Either.cond(_, (photo.storageKey, ()), NotFound("photo")))
       }
-    transactWrite(recipeId)(program).flatMap {
+    }.flatMap {
       case Left(error)            => IO.pure(Left(error))
       case Right((storageKey, _)) =>
         photoCleanup.deleteBestEffort(List(storageKey)).as(Right(()))
@@ -145,7 +143,7 @@ final class PhotoService(
       photoId: PhotoId,
       variant: PhotoVariant
   ): IO[Either[ApiError, PhotoMedia]] =
-    photos.find(photoId).transact(transactor).map { storedPhoto =>
+    pool.use(_.photos.find(photoId)).map { storedPhoto =>
       for {
         photo <- storedPhoto.toRight(NotFound("photo"))
         extension <- PhotoExtension
@@ -158,7 +156,7 @@ final class PhotoService(
       recipeId: RecipeId,
       variant: PhotoVariant
   ): IO[Either[ApiError, PhotoMedia]] =
-    photos.findPrimaryForRecipe(recipeId).transact(transactor).map { storedPhoto =>
+    pool.use(_.photos.findPrimaryForRecipe(recipeId)).map { storedPhoto =>
       for {
         photo <- storedPhoto.toRight(NotFound("photo"))
         extension <- PhotoExtension
@@ -173,7 +171,7 @@ final class PhotoService(
     now.flatMap { timestamp =>
       (
         photoStore.listStorageKeysOlderThan(timestamp.minusSeconds(1.hour.toSeconds)),
-        photos.listStorageKeys.transact(transactor).map(_.toSet)
+        pool.use(_.photos.listStorageKeys).map(_.toSet)
       ).tupled.flatMap { case (storedKeys, referencedKeys) =>
         val orphaned = storedKeys.diff(referencedKeys)
         photoCleanup.deleteBestEffort(orphaned.toList).as(orphaned.size)
@@ -223,17 +221,18 @@ final class PhotoService(
               timestamp,
               timestamp
             )
-          val program =
+          transactWrite(recipeId) { repos =>
+            import repos.{meals, photos}
             meals.find(mealId).flatMap {
-              case None => NotFound("meal").asLeft[Photo].pure[ConnectionIO]
+              case None => NotFound("meal").asLeft[Photo].pure[IO]
               case Some(meal) if meal.recipeId != recipeId =>
                 InvalidRelationship("meal does not belong to recipe")
                   .asLeft[Photo]
-                  .pure[ConnectionIO]
+                  .pure[IO]
               case Some(_) =>
                 photos.create(photo).as(photo.asRight[ApiError])
             }
-          transactWrite(recipeId)(program).attempt.flatMap {
+          }.attempt.flatMap {
             case Right(Right(saved)) => IO.pure(Right(saved))
             case Right(Left(error))  =>
               photoCleanup.deleteBestEffort(List(storageKey)).as(Left(error))
@@ -252,7 +251,7 @@ final class PhotoService(
       recipeId: RecipeId,
       mealId: MealId
   ): IO[Either[ApiError, Unit]] =
-    meals.find(mealId).transact(transactor).map {
+    pool.use(_.meals.find(mealId)).map {
       case None       => Left(NotFound("meal"))
       case Some(meal) =>
         Either.cond(
@@ -263,11 +262,12 @@ final class PhotoService(
     }
 
   private def findRelated(
+      repos: SkunkRepositories,
       recipeId: RecipeId,
       mealId: MealId,
       photoId: PhotoId
-  ): ConnectionIO[Either[ApiError, Photo]] =
-    (meals.find(mealId), photos.find(photoId)).tupled.map {
+  ): IO[Either[ApiError, Photo]] =
+    (repos.meals.find(mealId), repos.photos.find(photoId)).tupled.map {
       case (None, _)                                    => Left(NotFound("meal"))
       case (_, None)                                    => Left(NotFound("photo"))
       case (Some(meal), _) if meal.recipeId != recipeId =>
@@ -302,8 +302,8 @@ final class PhotoService(
     if (sanitized.isEmpty) "photo" else sanitized
   }
 
-  private def transactWrite[A](recipeId: RecipeId)(program: ConnectionIO[A]): IO[A] =
-    (recipes.findForUpdate(recipeId) *> program).transact(transactor)
+  private def transactWrite[A](recipeId: RecipeId)(use: SkunkRepositories => IO[A]): IO[A] =
+    pool.transaction(repos => repos.recipes.findForUpdate(recipeId) *> IO.defer(use(repos)))
 
   private def now: IO[Instant] = Clock[IO].realTimeInstant
 
@@ -316,34 +316,28 @@ final class PhotoService(
 
 object PhotoService {
   def apply(
-      transactor: Transactor[IO],
+      pool: Database,
       photoStore: PhotoStore,
       photoCleanup: PhotoCleanup[IO]
   ): PhotoService =
     new PhotoService(
-      transactor,
+      pool,
       photoStore,
       ImageProcessor(),
-      DoobieRepositories.recipes,
-      DoobieRepositories.meals,
-      DoobieRepositories.photos,
       photoCleanup,
       OperationalMetrics.noop
     )
 
   def apply(
-      transactor: Transactor[IO],
+      pool: Database,
       photoStore: PhotoStore,
       photoCleanup: PhotoCleanup[IO],
       metrics: OperationalMetrics
   ): PhotoService =
     new PhotoService(
-      transactor,
+      pool,
       photoStore,
       ImageProcessor(),
-      DoobieRepositories.recipes,
-      DoobieRepositories.meals,
-      DoobieRepositories.photos,
       photoCleanup,
       metrics
     )

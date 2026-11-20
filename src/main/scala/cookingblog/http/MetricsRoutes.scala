@@ -1,27 +1,31 @@
 package cookingblog.http
 
+import cookingblog.database.Database
 import cats.effect.IO
 import cookingblog.observability.OperationalMetrics
-import doobie.Transactor
-import doobie.implicits.*
+import skunk.codec.all.{text, int8}
+import skunk.implicits.*
 import org.http4s.*
 import org.http4s.dsl.io.*
 import org.typelevel.ci.CIString
 
 /** Authenticated Prometheus-compatible operational metrics. */
 final class MetricsRoutes(
-    transactor: Transactor[IO],
+    pool: Database,
     metrics: OperationalMetrics
 ) {
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] { case GET -> Root / "metrics" =>
-    sql"""
+    pool.session
+      .use(
+        _.execute(
+          sql"""
         select status, count(*)
         from scrape_jobs
         group by status
       """
-      .query[(String, Long)]
-      .to[List]
-      .transact(transactor)
+            .query(text *: int8)
+        )
+      )
       .flatMap(counts => metrics.render(counts.toMap))
       .flatMap(body =>
         Ok(body).map(
