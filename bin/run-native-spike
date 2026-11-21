@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+project="cooking-blog-native-spike-$(date +%s)-$$"
+compose() {
+  docker compose --env-file /dev/null -p "$project" -f native-spike/compose.yaml "$@"
+}
+
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    compose logs postgres flyway >&2 || true
+  fi
+  compose down --volumes
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+compose run --rm --build -T smoke

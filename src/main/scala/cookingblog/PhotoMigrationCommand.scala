@@ -3,7 +3,7 @@ package cookingblog
 import cats.effect.{ExitCode, IO, IOApp, Resource}
 import cats.syntax.all.*
 import cookingblog.config.{AppConfig, S3PhotoConfig}
-import cookingblog.database.Database
+import cookingblog.database.{Database, JvmDatabase}
 import cookingblog.storage.*
 import io.circe.syntax.*
 
@@ -68,7 +68,7 @@ object PhotoMigrationCommand extends IOApp {
       direction: PhotoMigrationDirection
   ): Resource[IO, (Database, PhotoStore, PhotoStore)] =
     for {
-      pool <- Database.pooled(config.database)
+      pool <- JvmDatabase.pooled(config.database)
       local <- Resource.eval(LocalPhotoStore.create(localDirectory))
       s3Store <- S3PhotoStore.create(s3)
       (source, target) =

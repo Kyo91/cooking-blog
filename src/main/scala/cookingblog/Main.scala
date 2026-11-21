@@ -4,7 +4,7 @@ import cats.effect.*
 import com.comcast.ip4s.{Host, Port}
 import cookingblog.auth.*
 import cookingblog.config.*
-import cookingblog.database.Database
+import cookingblog.database.JvmDatabase
 import cookingblog.http.AppHttp
 import cookingblog.observability.OperationalMetrics
 import cookingblog.scraping.Scraping
@@ -33,12 +33,12 @@ object Main extends IOApp.Simple {
           )
         )
       )
-      _ <- Resource.eval(Database.migrate(config.database))
-      pool <- Database.pooled(config.database)
+      _ <- Resource.eval(JvmDatabase.migrate(config.database))
+      pool <- JvmDatabase.pooled(config.database)
       sessionStore = SkunkSessionStore(pool)
       secureRandom <- Resource.eval(IO.blocking(SecureRandom()))
       sessionManager =
-        SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom)
+        SessionManager[IO](sessionStore, config.auth.sessionLifetime, secureRandom.nextBytes)
       credentialsAuthenticator <- Resource.eval(authenticator(config))
       metrics <- Resource.eval(OperationalMetrics.create)
       photoStore <- PhotoStore.create(config.photos)

@@ -4,9 +4,14 @@ ThisBuild / organization := "cookingblog"
 ThisBuild / scalaVersion := "3.8.4"
 ThisBuild / version := "0.1.0"
 
+lazy val sharedSources = Seq(
+  Compile / unmanagedSourceDirectories += (ThisBuild / baseDirectory).value / "src" / "shared" / "scala"
+)
+
 lazy val root = project
   .in(file("."))
   .enablePlugins(JavaAppPackaging, DockerPlugin)
+  .settings(sharedSources)
   .settings(
     name := "cooking-blog",
     Compile / mainClass := Some("cookingblog.Main"),
@@ -58,4 +63,27 @@ lazy val root = project
       munitCatsEffect % Test,
       testcontainersPostgres % Test
     )
+  )
+
+// Intentionally neither aggregated by nor dependent on the JVM application.
+lazy val nativeSpike = project
+  .in(file("native-spike"))
+  .enablePlugins(ScalaNativePlugin)
+  .settings(sharedSources)
+  .settings(
+    name := "cooking-blog-native-spike",
+    Compile / mainClass := Some("cookingblog.spike.NativeSpike"),
+    publish / skip := true,
+    scalacOptions ++= Seq(
+      "-no-indent",
+      "-deprecation",
+      "-feature",
+      "-unchecked",
+      "-Wunused:all",
+      "-Wvalue-discard",
+      "-Werror"
+    ),
+    libraryDependencies ++= nativeSpikeDependencies.map { dependency =>
+      dependency.organization %%% dependency.name % dependency.revision
+    }
   )

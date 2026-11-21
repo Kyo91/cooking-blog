@@ -58,6 +58,29 @@ To run just the concurrent-write regression suite:
 sbt --client "testOnly cookingblog.service.ConcurrentWritesIntegrationSuite"
 ```
 
+## Scala Native smoke test
+
+Run the isolated Linux smoke test with Docker Compose:
+
+```sh
+./bin/run-native-spike
+```
+
+The command builds the `nativeSpike` sbt target in a Linux container, starts a
+fresh PostgreSQL fixture, and applies the app's existing migrations in a
+separate Flyway container. The Native server uses the shared Skunk pool and
+login/session routes with OpenSSL for its cryptography. The smoke test checks
+that invalid credentials and unauthenticated requests are rejected, a valid
+login can query the migrated database, the session survives a server restart,
+and CSRF-protected logout invalidates the original cookie. No ports are
+published; the script removes the fixture and its database volume on exit.
+The build image stays cached.
+
+This is a loopback-only smoke test, not an application build or a deployment.
+It does not exercise PostgreSQL TLS. The JVM app still accepts its existing
+JDBC URL and runs Flyway at startup. See the
+[Scala Native migration plan](docs/scala-native-migration.md) for the remaining work.
+
 ## Browser enhancements
 
 The browser UI is server-rendered HTML. HTMX 4.0.0 is pinned and vendored locally

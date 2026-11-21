@@ -8,6 +8,7 @@ object Dependencies {
   private val skunkVersion = "1.0.0"
   private val postgresJdbcVersion = "42.7.10"
   private val flywayVersion = "11.13.2"
+  private val nativeSpikeHttp4sVersion = "0.23.39"
   private val http4sVersion = "0.23.32"
   private val jsoupVersion = "1.22.2"
   private val log4catsVersion = "2.7.1"
@@ -45,6 +46,10 @@ object Dependencies {
   val awsS3 = "software.amazon.awssdk" % "s3" % awsSdkVersion
   val awsNettyNioClient =
     "software.amazon.awssdk" % "netty-nio-client" % awsSdkVersion
+  // Only the isolated Native target cross-publishes these modules.
+  val nativeSpikeDependencies = Seq(catsEffect, ciris.withRevision("3.15.2"), skunk) ++
+    Seq("http4s-ember-server", "http4s-dsl").map("org.http4s" % _ % nativeSpikeHttp4sVersion)
+
   val munitCatsEffect =
     "org.typelevel" %% "munit-cats-effect" % munitCatsEffectVersion
   val testcontainersPostgres =

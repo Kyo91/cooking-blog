@@ -1,0 +1,13 @@
+**
+!build.sbt
+!project/
+!project/build.properties
+!project/Dependencies.scala
+!project/plugins.sbt
+!src/
+!src/shared/
+!src/shared/**
+!native-spike/
+!native-spike/smoke.sh
+!native-spike/src/
+!native-spike/src/**

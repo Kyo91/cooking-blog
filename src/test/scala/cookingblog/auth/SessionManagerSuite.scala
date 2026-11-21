@@ -10,7 +10,7 @@ final class SessionManagerSuite extends CatsEffectSuite {
   test("creates, authenticates, validates CSRF, and invalidates a session") {
     for {
       store <- InMemorySessionStore.create[IO]
-      manager = SessionManager[IO](store, 24.hours, SecureRandom())
+      manager = SessionManager[IO](store, 24.hours, SecureRandom().nextBytes)
       issued <- manager.create(Principal("admin"))
       authenticated <- manager.authenticate(issued.token, Some(issued.csrfSecret))
       csrfIsValid <- authenticated.fold(IO.pure(false))(manager.validateCsrf(_, issued.csrfSecret))
@@ -26,7 +26,7 @@ final class SessionManagerSuite extends CatsEffectSuite {
   test("rejects an invalid CSRF secret") {
     for {
       store <- InMemorySessionStore.create[IO]
-      manager = SessionManager[IO](store, 24.hours, SecureRandom())
+      manager = SessionManager[IO](store, 24.hours, SecureRandom().nextBytes)
       issued <- manager.create(Principal("admin"))
       authenticated <- manager.authenticate(issued.token, Some(issued.csrfSecret))
       csrfIsValid <- authenticated.fold(IO.pure(false))(manager.validateCsrf(_, "wrong"))

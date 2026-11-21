@@ -4,7 +4,6 @@ import cats.effect.kernel.{Clock, Sync}
 import cats.syntax.all.*
 
 import java.nio.charset.StandardCharsets
-import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
 import scala.concurrent.duration.FiniteDuration
 
@@ -13,7 +12,7 @@ import scala.concurrent.duration.FiniteDuration
 final class SessionManager[F[_]: Clock: Sync](
     store: SessionStore[F],
     sessionLifetime: FiniteDuration,
-    secureRandom: SecureRandom
+    fillRandom: Array[Byte] => Unit
 ) {
 
   /** Generates independent session and CSRF secrets, retaining only their hashes in the store. */
@@ -43,7 +42,7 @@ final class SessionManager[F[_]: Clock: Sync](
 
   def validateCsrf(session: AuthenticatedSession, submittedSecret: String): F[Boolean] =
     Sync[F].delay(
-      MessageDigest.isEqual(
+      AuthCrypto.constantTimeEquals(
         hash(submittedSecret).getBytes(StandardCharsets.UTF_8),
         session.record.csrfSecretHash.getBytes(StandardCharsets.UTF_8)
       )
@@ -58,13 +57,12 @@ final class SessionManager[F[_]: Clock: Sync](
   private def randomToken: F[String] =
     Sync[F].delay {
       val bytes = Array.ofDim[Byte](32)
-      secureRandom.nextBytes(bytes)
+      fillRandom(bytes)
       Base64.getUrlEncoder.withoutPadding().encodeToString(bytes)
     }
 
   private def hash(value: String): String = {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8))
+    val bytes = AuthCrypto.sha256(value.getBytes(StandardCharsets.UTF_8))
     bytes.map(byte => f"${byte & 0xff}%02x").mkString
   }
 }
