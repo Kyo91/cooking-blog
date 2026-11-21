@@ -287,7 +287,7 @@ final class AppHttpIntegrationSuite extends PostgresIntegrationSuite {
       pool <- database
       store = SkunkSessionStore(pool)
       random <- Resource.eval(IO.blocking(SecureRandom()))
-      manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
+      manager = SessionManager[IO](store, authConfig.sessionLifetime, random.nextBytes)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       metrics <- Resource.eval(OperationalMetrics.create)
       photoDirectory <- temporaryDirectory

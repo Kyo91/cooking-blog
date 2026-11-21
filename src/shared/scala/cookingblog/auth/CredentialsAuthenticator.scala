@@ -5,7 +5,6 @@ import cats.syntax.all.*
 import cookingblog.config.AuthConfig
 
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import scala.concurrent.duration.*
 
 /** Verifies supplied credentials and yields the authenticated principal when valid. */
@@ -86,7 +85,7 @@ object ConfiguredCredentialsAuthenticator {
 
 object CredentialsAuthenticator {
   private[auth] def constantTimeEquals(left: String, right: String): Boolean =
-    MessageDigest.isEqual(
+    AuthCrypto.constantTimeEquals(
       left.getBytes(StandardCharsets.UTF_8),
       right.getBytes(StandardCharsets.UTF_8)
     )

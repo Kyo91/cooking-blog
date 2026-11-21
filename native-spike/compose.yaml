@@ -1,0 +1,44 @@
+# Disposable integration fixture. No ports are published to the host.
+services:
+  postgres:
+    image: postgres:17.10-alpine
+    environment:
+      POSTGRES_DB: cooking_blog_spike
+      POSTGRES_USER: cooking_blog_spike
+      POSTGRES_PASSWORD: spike-fixture-only
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "cooking_blog_spike", "-d", "cooking_blog_spike"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  flyway:
+    image: flyway/flyway:11.13.2
+    command: ["migrate"]
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/cooking_blog_spike
+      FLYWAY_USER: cooking_blog_spike
+      FLYWAY_PASSWORD: spike-fixture-only
+    volumes:
+      - ../src/main/resources/db/migration:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  smoke:
+    image: cooking-blog-native-spike:local
+    build:
+      context: ..
+      dockerfile: native-spike/Dockerfile
+    environment:
+      SPIKE_DB_HOST: postgres
+      SPIKE_DB_PORT: "5432"
+      SPIKE_DB_NAME: cooking_blog_spike
+      SPIKE_DB_USER: cooking_blog_spike
+      SPIKE_DB_PASSWORD: spike-fixture-only
+      SPIKE_AUTH_USER: smoke-admin
+      SPIKE_AUTH_PASSWORD: smoke-login-fixture-only
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/usr/local/bin/smoke.sh"]

@@ -34,13 +34,6 @@ final case class DatabaseConfig(
     poolSize: Int
 )
 
-final case class AuthConfig(
-    username: String,
-    password: Secret[String],
-    sessionLifetime: FiniteDuration,
-    cookieSecure: Boolean
-)
-
 sealed trait PhotoConfig
 
 final case class LocalPhotoConfig(directory: Path) extends PhotoConfig

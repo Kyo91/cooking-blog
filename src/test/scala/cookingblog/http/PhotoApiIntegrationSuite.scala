@@ -262,7 +262,7 @@ final class PhotoApiIntegrationSuite extends PostgresIntegrationSuite {
         SessionManager[IO](
           sessionStore,
           authConfig.sessionLifetime,
-          random
+          random.nextBytes
         )
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       directory <- temporaryDirectory

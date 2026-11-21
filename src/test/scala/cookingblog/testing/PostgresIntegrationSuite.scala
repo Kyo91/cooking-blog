@@ -3,7 +3,7 @@ package cookingblog.testing
 import cats.effect.{IO, Resource}
 import ciris.Secret
 import cookingblog.config.DatabaseConfig
-import cookingblog.database.Database
+import cookingblog.database.{Database, JvmDatabase}
 import munit.{AnyFixture, CatsEffectSuite}
 import org.testcontainers.postgresql.PostgreSQLContainer
 
@@ -36,7 +36,7 @@ abstract class PostgresIntegrationSuite extends CatsEffectSuite {
           Secret(container.getPassword),
           poolSize = databasePoolSize
         )
-        Database.migrate(config).as(config)
+        JvmDatabase.migrate(config).as(config)
       }
   )
 
@@ -45,5 +45,5 @@ abstract class PostgresIntegrationSuite extends CatsEffectSuite {
   protected def databaseConfig: DatabaseConfig = postgres()
 
   protected def database: Resource[IO, Database] =
-    Resource.eval(IO(databaseConfig)).flatMap(Database.pooled)
+    Resource.eval(IO(databaseConfig)).flatMap(JvmDatabase.pooled)
 }

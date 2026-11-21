@@ -467,7 +467,7 @@ final class ApiIntegrationSuite extends PostgresIntegrationSuite {
       pool <- database
       store = SkunkSessionStore(pool)
       random <- Resource.eval(IO.blocking(SecureRandom()))
-      manager = SessionManager[IO](store, authConfig.sessionLifetime, random)
+      manager = SessionManager[IO](store, authConfig.sessionLifetime, random.nextBytes)
       credentials = DummyCredentialsAuthenticator[IO](authConfig)
       photoDirectory <- temporaryDirectory
       photoStore <- Resource.eval(LocalPhotoStore.create(photoDirectory))
